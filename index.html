@@ -19,8 +19,13 @@
     <script src="https://unpkg.com/@phosphor-icons/web"></script>
 </head>
 <body class="bg-slate-50 text-slate-900 h-screen overflow-hidden flex flex-col md:flex-row">
-    <!-- Sidebar / Directory -->
-    <aside class="w-full md:w-[400px] bg-white border-r border-slate-200 flex flex-col h-[40vh] md:h-screen z-10 shadow-xl shrink-0 order-2 md:order-1">
+    <!-- Sidebar / Bottom Sheet -->
+    <aside id="bottomSheet" class="fixed inset-x-0 bottom-0 md:relative w-full md:w-[400px] bg-white md:border-r border-slate-200 flex flex-col h-[90vh] md:h-screen z-[1000] md:z-10 shadow-[0_-10px_40px_rgba(0,0,0,0.15)] md:shadow-xl shrink-0 order-2 md:order-1 rounded-t-3xl md:rounded-none transition-transform duration-300 transform translate-y-[calc(100%-60px)] md:translate-y-0 will-change-transform">
+        <!-- Drag Handle (Mobile Only) -->
+        <div class="w-full flex justify-center pt-3 pb-2 md:hidden cursor-grab active:cursor-grabbing touch-none" id="dragHandle">
+            <div class="w-12 h-1.5 bg-slate-300 rounded-full pointer-events-none"></div>
+        </div>
+        
         <div class="p-4 border-b border-slate-200 bg-white/80 backdrop-blur-md sticky top-0 z-20">
             <h1 class="text-xl font-bold text-slate-800 flex items-center gap-2">
                 <i class="ph-fill ph-pulse text-red-500"></i> Abone CRM
@@ -61,11 +66,11 @@
     </aside>
 
     <!-- Map Container -->
-    <main class="flex-1 relative h-[60vh] md:h-screen z-0 order-1 md:order-2">
+    <main class="flex-1 relative h-screen w-full z-0 order-1 md:order-2">
         <div id="map" class="w-full h-full"></div>
         
         <!-- Near Me Button -->
-        <button id="nearMeBtn" class="absolute bottom-6 right-6 z-[400] bg-white text-blue-600 p-3 rounded-full shadow-xl hover:bg-blue-50 transition-all active:scale-95 group border border-blue-100" title="Find 10 Closest Doctors">
+        <button id="nearMeBtn" class="absolute bottom-24 md:bottom-6 right-4 md:right-6 z-[400] bg-white text-blue-600 p-3 rounded-full shadow-xl hover:bg-blue-50 transition-all active:scale-95 group border border-blue-100" title="Find 10 Closest Doctors">
             <i class="ph-fill ph-navigation-arrow text-2xl group-hover:animate-pulse"></i>
         </button>
     </main>

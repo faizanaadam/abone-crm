@@ -24,7 +24,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 });
 
 function initMap() {
-    map = L.map('map').setView([12.9716, 77.5946], 11); // Center Bangalore
+    map = L.map('map', {
+        zoomControl: false,
+        touchZoom: true,
+        dragging: true,
+        tap: false // disables default tap logic that sometimes interferes on mobile
+    }).setView([12.9716, 77.5946], 11); // Center Bangalore
     L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
         attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
         subdomains: 'abcd',
@@ -158,7 +163,7 @@ function renderDoctors(docs) {
         // --- 2. Sidebar Card ---
         const card = document.createElement('div');
         card.id = `doc-card-${doc.id}`;
-        card.className = 'doctor-card bg-white border border-slate-200 rounded-xl p-4 cursor-pointer relative overflow-hidden group';
+        card.className = 'doctor-card bg-white border border-slate-200 rounded-xl p-4 min-h-[80px] cursor-pointer relative overflow-hidden group';
         
         card.innerHTML = `
             <div class="flex justify-between items-start mb-2">
@@ -234,6 +239,9 @@ function locateDoctor(id) {
     document.getElementById('detail-card').classList.remove('hidden');
     document.getElementById('detail-card').classList.add('flex');
     
+    // Snap to partial on mobile
+    if (typeof setSheetState === 'function') setSheetState('partial');
+    
     // Populate Detail View
     const addressHtml = doc.hospital_address || doc.clinic_location || doc.full_address || 'Address not available';
     const clinicHtml = doc.clinic_name || doc.hospitals_practice || 'Clinic not available';
@@ -282,17 +290,17 @@ function locateDoctor(id) {
             </div>
         </div>
         
-        <div class="mt-6 flex gap-3">
+        <div class="mt-6 flex flex-col gap-3">
             ${doc.phone ? `
-            <a href="tel:${doc.phone}" class="flex-1 bg-green-600 text-white py-3 rounded-xl font-bold hover:bg-green-700 transition flex items-center justify-center gap-2 shadow-sm">
-                <i class="ph-fill ph-phone text-xl"></i> Call Doctor
+            <a href="tel:${doc.phone}" class="w-full bg-green-600 text-white py-4 rounded-xl font-bold hover:bg-green-700 transition flex items-center justify-center gap-2 shadow-md text-lg">
+                <i class="ph-fill ph-phone text-2xl"></i> Call Doctor
             </a>` : `
-            <button disabled class="flex-1 bg-slate-200 text-slate-400 py-3 rounded-xl font-bold flex items-center justify-center gap-2 cursor-not-allowed">
-                <i class="ph-fill ph-phone-slash text-xl"></i> No Phone
+            <button disabled class="w-full bg-slate-200 text-slate-400 py-4 rounded-xl font-bold flex items-center justify-center gap-2 cursor-not-allowed text-lg">
+                <i class="ph-fill ph-phone-slash text-2xl"></i> No Phone
             </button>`}
             
-            <button onclick="openEditModal(${doc.id})" class="flex-1 bg-blue-50 text-blue-700 border border-blue-200 py-3 rounded-xl font-bold hover:bg-blue-100 transition flex items-center justify-center gap-2 shadow-sm">
-                <i class="ph-fill ph-pencil-simple text-xl"></i> Edit Info
+            <button onclick="openEditModal(${doc.id})" class="w-full bg-blue-50 text-blue-700 border border-blue-200 py-2.5 rounded-xl font-bold hover:bg-blue-100 transition flex items-center justify-center gap-2 shadow-sm text-sm">
+                <i class="ph-fill ph-pencil-simple text-lg"></i> Edit Info
             </button>
         </div>
     `;
@@ -438,7 +446,77 @@ function setupEventListeners() {
             prevMarker.closeTooltip();
         }
         activeDoctorId = null;
+        
+        // Snap back to full list on mobile
+        if (typeof setSheetState === 'function') setSheetState('full');
     });
+
+    setupBottomSheet();
+}
+
+// --- Bottom Sheet Logic ---
+let setSheetState;
+function setupBottomSheet() {
+    const bottomSheet = document.getElementById('bottomSheet');
+    const dragHandle = document.getElementById('dragHandle');
+    let startY = 0;
+    let currentY = 0;
+    let isDragging = false;
+    let currentState = 'hidden';
+
+    setSheetState = function(state) {
+        currentState = state;
+        bottomSheet.style.transition = 'transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1)';
+        if (window.innerWidth >= 768) {
+            bottomSheet.style.transform = `translateY(0)`;
+            return;
+        }
+        if (state === 'hidden') {
+            bottomSheet.style.transform = `translateY(calc(100% - 60px))`;
+        } else if (state === 'partial') {
+            bottomSheet.style.transform = `translateY(50%)`;
+        } else if (state === 'full') {
+            bottomSheet.style.transform = `translateY(10%)`;
+        }
+    };
+
+    if (dragHandle) {
+        dragHandle.addEventListener('touchstart', (e) => {
+            startY = e.touches[0].clientY;
+            const rect = bottomSheet.getBoundingClientRect();
+            currentY = rect.top;
+            isDragging = true;
+            bottomSheet.style.transition = 'none';
+        }, {passive: true});
+
+        dragHandle.addEventListener('touchmove', (e) => {
+            if (!isDragging) return;
+            const deltaY = e.touches[0].clientY - startY;
+            let newY = currentY + deltaY;
+            if (newY < window.innerHeight * 0.1) newY = window.innerHeight * 0.1;
+            if (newY > window.innerHeight - 60) newY = window.innerHeight - 60;
+            bottomSheet.style.transform = `translateY(${newY}px)`;
+        }, {passive: true});
+
+        dragHandle.addEventListener('touchend', (e) => {
+            if (!isDragging) return;
+            isDragging = false;
+            const rect = bottomSheet.getBoundingClientRect();
+            const y = rect.top;
+            const vh = window.innerHeight;
+            
+            if (y < vh * 0.3) {
+                setSheetState('full');
+            } else if (y < vh * 0.75) {
+                setSheetState('partial');
+            } else {
+                setSheetState('hidden');
+            }
+        });
+    }
+
+    window.addEventListener('resize', () => setSheetState(currentState));
+    setSheetState('partial'); // Start in partial state
 }
 
 // --- Near Me (Haversine) ---
