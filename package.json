@@ -1,0 +1,11 @@
+{
+  "name": "abone-crm",
+  "version": "1.0.0",
+  "description": "CRM for Abone Surgicals",
+  "scripts": {
+    "build": "npx tailwindcss -i input.css -o tailwind.css --minify"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.1"
+  }
+}

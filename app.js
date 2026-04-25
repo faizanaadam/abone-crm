@@ -1,7 +1,7 @@
 // Supabase Configuration
 const supabaseUrl = 'https://jrvghcxtrpdmyhgjypms.supabase.co';
 const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpydmdoY3h0cnBkbXloZ2p5cG1zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcxMDA4ODIsImV4cCI6MjA5MjY3Njg4Mn0.UVlzfHUnkpWQPt-RAmK9m2cpoX20GQNsEPs9m1w8bto';
-const supabase = window.supabase.createClient(supabaseUrl, supabaseKey);
+const db = window.supabase.createClient(supabaseUrl, supabaseKey);
 
 // State
 let map;
@@ -40,7 +40,7 @@ function initMap() {
 }
 
 async function fetchZones() {
-    const { data, error } = await supabase.from('zones').select('*');
+    const { data, error } = await db.from('zones').select('*');
     if (error) {
         console.error('Error fetching zones:', error);
         return;
@@ -51,7 +51,7 @@ async function fetchZones() {
 }
 
 async function fetchDoctors() {
-    const { data, error } = await supabase.from('doctors').select('*');
+    const { data, error } = await db.from('doctors').select('*');
     if (error) {
         console.error('Error fetching doctors:', error);
         document.getElementById('doctorList').innerHTML = '<div class="text-red-500 text-center p-4">Failed to load directory.</div>';
@@ -294,7 +294,7 @@ async function saveEdit() {
 
     btnText.textContent = 'Saving...';
     
-    const { error } = await supabase
+    const { error } = await db
         .from('doctors')
         .update({ phone: phone, consultation_timing: timing, rep_notes: notes })
         .eq('id', id);
@@ -416,7 +416,7 @@ function haversineDistance(lat1, lon1, lat2, lon2) {
 
 // --- Realtime Sync ---
 function setupRealtime() {
-    supabase
+    db
       .channel('schema-db-changes')
       .on(
         'postgres_changes',
