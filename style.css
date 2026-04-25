@@ -80,6 +80,16 @@
 .spec-trauma .marker-pin { background-color: #f97316; } /* Orange */
 .spec-general .marker-pin { background-color: #3b82f6; } /* Blue */
 
+/* Approximate Marker (Grey Circle) */
+.spec-approximate .marker-pin {
+    background-color: #94a3b8; /* Grey */
+    border-radius: 50%;
+    transform: none; /* remove pin shape */
+}
+.spec-approximate .marker-pin::after {
+    display: none; /* remove inner white dot */
+}
+
 /* THE BLINK ANIMATION FOR ACTIVE MARKER */
 @keyframes markerPulse {
     0% {

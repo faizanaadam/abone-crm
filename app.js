@@ -127,9 +127,16 @@ function renderDoctors(docs) {
     }
 
     docs.forEach(doc => {
+        // --- Bounding Box Filter ---
+        if (doc.lat && doc.lon) {
+            if (doc.lat < 12.7 || doc.lat > 13.25 || doc.lon < 77.3 || doc.lon > 77.85) {
+                return; // skip out of bounds
+            }
+        }
+
         // --- 1. Map Marker ---
         if (doc.lat && doc.lon) {
-            const specClass = getSpecClass(doc.specialization);
+            const specClass = doc.is_approximate ? 'spec-approximate' : 'spec-general';
             const icon = L.divIcon({
                 className: `custom-marker ${specClass}`,
                 iconSize: [30, 30],
@@ -138,17 +145,9 @@ function renderDoctors(docs) {
             });
 
             const marker = L.marker([doc.lat, doc.lon], { icon });
-            marker.bindPopup(`
-                <div class="p-2 min-w-[200px]">
-                    <h3 class="font-bold text-sm mb-1">${doc.name}</h3>
-                    <p class="text-xs text-slate-600 mb-2">${doc.specialization || 'Orthopedic'}</p>
-                    <a href="https://www.google.com/maps/dir/?api=1&destination=${doc.lat},${doc.lon}" target="_blank" class="w-full block text-center bg-blue-600 text-white py-1.5 rounded text-xs font-medium hover:bg-blue-700 transition">
-                        Navigate Here
-                    </a>
-                </div>
-            `);
+            marker.bindTooltip(`<b>${doc.name}</b>`, { direction: 'top', offset: [0, -30] });
 
-            marker.on('click', () => highlightDoctorInList(doc.id));
+            marker.on('click', () => locateDoctor(doc.id));
             markerCluster.addLayer(marker);
             markersMap.set(doc.id, marker);
         }
@@ -224,7 +223,53 @@ function filterByZone(zoneId) {
 }
 
 function locateDoctor(id) {
-    highlightDoctorInList(id);
+    const doc = doctorsData.find(d => d.id === id);
+    if (!doc) return;
+
+    // View Swapping
+    document.getElementById('doctorList').classList.add('hidden');
+    document.getElementById('detail-card').classList.remove('hidden');
+    document.getElementById('detail-card').classList.add('flex');
+    
+    // Populate Detail View
+    const addressHtml = doc.hospital_address || doc.clinic_location || doc.full_address || 'Address not available';
+    const clinicHtml = doc.clinic_name || doc.hospitals_practice || 'Clinic not available';
+    
+    document.getElementById('detailContent').innerHTML = `
+        <h2 class="text-xl font-bold text-slate-800">${doc.name}</h2>
+        <p class="text-sm font-medium text-slate-500 mb-4">${doc.specialization || 'General Ortho'}</p>
+        
+        <div class="space-y-4">
+            <div class="bg-white p-3 rounded-lg border border-slate-200">
+                <div class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Clinic / Hospital</div>
+                <div class="text-sm text-slate-700">${clinicHtml}</div>
+            </div>
+            
+            <div class="bg-white p-3 rounded-lg border border-slate-200">
+                <div class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Full Address</div>
+                <div class="text-sm text-slate-700">${addressHtml}</div>
+                ${doc.lat && doc.lon ? `
+                <a href="https://www.google.com/maps/dir/?api=1&destination=${doc.lat},${doc.lon}" target="_blank" class="text-blue-600 text-xs font-semibold mt-2 inline-block hover:underline">
+                    Get Directions &rarr;
+                </a>` : ''}
+            </div>
+        </div>
+        
+        <div class="mt-6 flex gap-3">
+            ${doc.phone ? `
+            <a href="tel:${doc.phone}" class="flex-1 bg-green-600 text-white py-3 rounded-xl font-bold hover:bg-green-700 transition flex items-center justify-center gap-2 shadow-sm">
+                <i class="ph-fill ph-phone text-xl"></i> Call Doctor
+            </a>` : `
+            <button disabled class="flex-1 bg-slate-200 text-slate-400 py-3 rounded-xl font-bold flex items-center justify-center gap-2 cursor-not-allowed">
+                <i class="ph-fill ph-phone-slash text-xl"></i> No Phone
+            </button>`}
+            
+            <button onclick="openEditModal(${doc.id})" class="flex-1 bg-blue-50 text-blue-700 border border-blue-200 py-3 rounded-xl font-bold hover:bg-blue-100 transition flex items-center justify-center gap-2 shadow-sm">
+                <i class="ph-fill ph-pencil-simple text-xl"></i> Edit Info
+            </button>
+        </div>
+    `;
+
     const marker = markersMap.get(id);
     if (marker) {
         // Remove blink from previous
@@ -235,13 +280,16 @@ function locateDoctor(id) {
 
         activeDoctorId = id;
 
-        markerCluster.zoomToShowLayer(marker, () => {
-            marker.openPopup();
-            // Add CSS blink animation
+        // Fly To
+        map.flyTo(marker.getLatLng(), 16, { animate: true, duration: 1 });
+        
+        // Blink animation
+        setTimeout(() => {
             if (marker.getElement()) {
                 L.DomUtil.addClass(marker.getElement(), 'marker-blinking');
             }
-        });
+            marker.openTooltip();
+        }, 1000);
     } else {
         alert("This doctor does not have a mapped location yet.");
     }
@@ -349,6 +397,21 @@ function setupEventListeners() {
     });
 
     document.getElementById('nearMeBtn').onclick = findNearMe;
+
+    document.getElementById('backToListBtn').addEventListener('click', () => {
+        document.getElementById('detail-card').classList.add('hidden');
+        document.getElementById('detail-card').classList.remove('flex');
+        document.getElementById('doctorList').classList.remove('hidden');
+        
+        if (activeDoctorId && markersMap.has(activeDoctorId)) {
+            const prevMarker = markersMap.get(activeDoctorId);
+            if (prevMarker.getElement()) {
+                L.DomUtil.removeClass(prevMarker.getElement(), 'marker-blinking');
+            }
+            prevMarker.closeTooltip();
+        }
+        activeDoctorId = null;
+    });
 }
 
 // --- Near Me (Haversine) ---
