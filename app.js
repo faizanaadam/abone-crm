@@ -147,7 +147,10 @@ function renderDoctors(docs) {
             const marker = L.marker([doc.lat, doc.lon], { icon });
             marker.bindTooltip(`<b>${doc.name}</b>`, { direction: 'top', offset: [0, -30] });
 
-            marker.on('click', () => locateDoctor(doc.id));
+            marker.on('click', () => {
+                const mapLink = doc.hospital_maps_link || `https://www.google.com/maps?q=${doc.lat},${doc.lon}`;
+                window.open(mapLink, '_blank');
+            });
             markerCluster.addLayer(marker);
             markersMap.set(doc.id, marker);
         }
@@ -234,6 +237,24 @@ function locateDoctor(id) {
     // Populate Detail View
     const addressHtml = doc.hospital_address || doc.clinic_location || doc.full_address || 'Address not available';
     const clinicHtml = doc.clinic_name || doc.hospitals_practice || 'Clinic not available';
+    const timingHtml = doc.consultation_timing || 'Timing not available';
+    
+    // Star rating generator
+    const rating = doc.hospital_rating ? parseFloat(doc.hospital_rating) : 0;
+    const reviews = doc.hospital_reviews ? `(${doc.hospital_reviews} reviews)` : '';
+    let starsHtml = '';
+    if (rating > 0) {
+        for(let i=1; i<=5; i++) {
+            if (i <= rating) starsHtml += '<i class="ph-fill ph-star text-yellow-400"></i>';
+            else if (i - 0.5 <= rating) starsHtml += '<i class="ph-fill ph-star-half text-yellow-400"></i>';
+            else starsHtml += '<i class="ph-fill ph-star text-slate-300"></i>';
+        }
+        starsHtml += ` <span class="text-xs text-slate-500 ml-1">${rating} ${reviews}</span>`;
+    } else {
+        starsHtml = '<span class="text-xs text-slate-400">No ratings</span>';
+    }
+    
+    const mapLink = doc.hospital_maps_link || (doc.lat ? `https://www.google.com/maps?q=${doc.lat},${doc.lon}` : '#');
     
     document.getElementById('detailContent').innerHTML = `
         <h2 class="text-xl font-bold text-slate-800">${doc.name}</h2>
@@ -243,13 +264,19 @@ function locateDoctor(id) {
             <div class="bg-white p-3 rounded-lg border border-slate-200">
                 <div class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Clinic / Hospital</div>
                 <div class="text-sm text-slate-700">${clinicHtml}</div>
+                <div class="mt-1 flex items-center">${starsHtml}</div>
+            </div>
+            
+            <div class="bg-white p-3 rounded-lg border border-slate-200">
+                <div class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Consultation Timing</div>
+                <div class="text-sm text-slate-700"><i class="ph ph-clock mr-1 text-slate-400"></i>${timingHtml}</div>
             </div>
             
             <div class="bg-white p-3 rounded-lg border border-slate-200">
                 <div class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Full Address</div>
                 <div class="text-sm text-slate-700">${addressHtml}</div>
                 ${doc.lat && doc.lon ? `
-                <a href="https://www.google.com/maps/dir/?api=1&destination=${doc.lat},${doc.lon}" target="_blank" class="text-blue-600 text-xs font-semibold mt-2 inline-block hover:underline">
+                <a href="${mapLink}" target="_blank" class="text-blue-600 text-xs font-semibold mt-2 inline-block hover:underline">
                     Get Directions &rarr;
                 </a>` : ''}
             </div>
