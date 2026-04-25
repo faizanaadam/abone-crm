@@ -235,7 +235,6 @@ function locateDoctor(id) {
 
         activeDoctorId = id;
 
-        // Zoom and cluster open
         markerCluster.zoomToShowLayer(marker, () => {
             marker.openPopup();
             // Add CSS blink animation
@@ -243,6 +242,8 @@ function locateDoctor(id) {
                 L.DomUtil.addClass(marker.getElement(), 'marker-blinking');
             }
         });
+    } else {
+        alert("This doctor does not have a mapped location yet.");
     }
 }
 
