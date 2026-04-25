@@ -36,7 +36,7 @@ function initMap() {
         maxClusterRadius: 40,
         spiderfyOnMaxZoom: true
     });
-    map.addTo(map);
+    map.addLayer(markerCluster);
 }
 
 async function fetchZones() {
