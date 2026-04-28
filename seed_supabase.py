@@ -15,12 +15,12 @@ HEADERS = {
 def clean_val(v):
     if v is None: return None
     if isinstance(v, float) and math.isnan(v): return None
-    if isinstance(v, str) and v.strip() in ('', 'nan', 'None', 'NaN'): return None
-    return str(v) if not isinstance(v, (int, float, bool)) else v
+    s = str(v).strip()
+    if s in ('', 'nan', 'None', 'NaN'): return None
+    return s
 
 def clean_float(v):
     if v is None: return None
-    if isinstance(v, float) and math.isnan(v): return None
     try:
         f = float(v)
         if math.isnan(f): return None
@@ -28,87 +28,74 @@ def clean_float(v):
     except (TypeError, ValueError):
         return None
 
+def classify_spec(raw):
+    """Classify the raw Specialization string into our 4 filter categories."""
+    if not raw: return 'General'
+    s = raw.lower().strip()
+    if 'exclude' in s: return 'Exclude'
+    if 'spine' in s and 'trauma' in s: return 'Both'
+    if 'spine' in s: return 'Spine'
+    if 'trauma' in s: return 'Trauma'
+    return 'General'
+
 # =============================================
-# STEP 0: TRUNCATE doctors TABLE (clean slate)
+# STEP 0: DELETE ALL existing doctors
 # =============================================
-print("Truncating doctors table...")
-# Delete all rows using a filter that matches everything (id != 0 covers all positive ids)
-r = requests.delete(
-    f"{URL}/doctors?id=gte.0",
-    headers={**HEADERS, "Prefer": "return=minimal"}
-)
-# Also delete any rows with null id or negative id just to be safe
-r2 = requests.delete(
-    f"{URL}/doctors?id=lt.0",
-    headers={**HEADERS, "Prefer": "return=minimal"}
-)
-print(f"Truncate status: {r.status_code}")
+print("Deleting all existing doctors...")
+# Delete in batches — fetch IDs and delete
+page = 0
+total_deleted = 0
+while True:
+    r = requests.get(
+        f"{URL}/doctors?select=id&limit=1000",
+        headers={"apikey": KEY, "Authorization": f"Bearer {KEY}"}
+    )
+    ids = [row['id'] for row in r.json()]
+    if not ids:
+        break
+    # Delete these IDs
+    id_list = ",".join(str(i) for i in ids)
+    rd = requests.delete(
+        f"{URL}/doctors?id=in.({id_list})",
+        headers={**HEADERS}
+    )
+    total_deleted += len(ids)
+    print(f"  Deleted batch of {len(ids)} (total: {total_deleted})")
+
+print(f"Total deleted: {total_deleted}")
 
 # Load data
 with open('processed_doctors.json', 'r', encoding='utf-8') as f:
     doctors_data = json.load(f)
 
 # =============================================
-# STEP 1: Seed Zones
+# STEP 1: Seed Doctors (1,244 records)
 # =============================================
-print("Seeding Zones...")
-ZONES = {
-    "1": {"name": "Hebbal / Yelahanka", "lat": 13.044796, "lon": 77.5910972},
-    "2": {"name": "Yeshwanthpur / Peenya", "lat": 13.0243, "lon": 77.5401},
-    "3": {"name": "Malleshwaram / Rajajinagar", "lat": 13.00764, "lon": 77.5640167},
-    "4": {"name": "Central / MG Road", "lat": 12.9755264, "lon": 77.6067902},
-    "5": {"name": "Indiranagar / Domlur", "lat": 12.9794595, "lon": 77.6406313},
-    "6": {"name": "Whitefield / Marathahalli", "lat": 12.9863497, "lon": 77.7325809},
-    "7": {"name": "HSR / Sarjapur", "lat": 12.9137415, "lon": 77.6374623},
-    "8": {"name": "Jayanagar / JP Nagar", "lat": 12.9265737, "lon": 77.5835041},
-    "9": {"name": "Bannerghatta / Electronic City", "lat": 12.8443019, "lon": 77.6632919},
-    "10": {"name": "RR Nagar / Kengeri", "lat": 12.9274, "lon": 77.5156}
-}
-
-zone_payload = [{"id": z_id, "name": z_info["name"], "lat": z_info["lat"], "lon": z_info["lon"]} for z_id, z_info in ZONES.items()]
-r = requests.post(f"{URL}/zones", headers={**HEADERS, "Prefer": "resolution=merge-duplicates"}, json=zone_payload)
-if r.status_code not in (200, 201):
-    print(f"  Zones note: {r.text[:200]}")
-else:
-    print(f"  Zones seeded OK.")
-
-# =============================================
-# STEP 2: Seed Doctors (1,244 records)
-# =============================================
-print("Building doctor payload...")
+print(f"\nBuilding payload from {len(doctors_data)} raw records...")
 doc_payload = []
 excluded_count = 0
 
 for row in doctors_data:
     name = clean_val(row.get('Doctor Name'))
-    if not name or name in ('Doctor Name', 'Unknown', 'nan'):
+    if not name or name in ('Doctor Name', 'Unknown'):
         continue
 
     specialization = clean_val(row.get('Specialization')) or ''
+    spec_category = classify_spec(specialization)
 
-    # EXCLUSION LOGIC: Skip "Exclude" specialization from ALL maps and lists
-    if specialization.strip().lower() == 'exclude':
+    # EXCLUSION: Skip "Exclude"
+    if spec_category == 'Exclude':
         excluded_count += 1
         continue
 
     z_id = clean_val(row.get('zone_id'))
-
     lat = clean_float(row.get('latitude'))
     lon = clean_float(row.get('longitude'))
-    location = None
-    if lat is not None and lon is not None:
-        location = f"SRID=4326;POINT({lon} {lat})"
+    location = f"SRID=4326;POINT({lon} {lat})" if lat is not None and lon is not None else None
 
-    # Normalize specialization into our 4 categories for the filter system
-    spec_lower = specialization.lower()
-    if 'spine' in spec_lower and ('trauma' in spec_lower or 'ortho' in spec_lower or 'both' in spec_lower):
-        spec_category = 'Both'
-    elif 'spine' in spec_lower:
-        spec_category = 'Spine'
-    elif 'trauma' in spec_lower:
-        spec_category = 'Trauma'
-    else:
-        spec_category = 'General'
+    area_name = clean_val(row.get('Area'))
+    if not area_name:
+        area_name = clean_val(row.get('Zone'))
 
     doc = {
         "koa_no": clean_val(row.get('KOA No')),
@@ -132,7 +119,7 @@ for row in doctors_data:
         "approx_surgeries": clean_val(row.get('Approx. Surgeries / Month')),
         "pct_using_abone": clean_val(row.get('% Using Abone')),
         "full_address": None,
-        "area_name": clean_val(row.get('Area')),
+        "area_name": area_name,
         "original_notes": clean_val(row.get('Notes')),
         "source": clean_val(row.get('Source')),
         "lat": lat,
@@ -144,7 +131,12 @@ for row in doctors_data:
 
     doc_payload.append(doc)
 
-print(f"Total to seed: {len(doc_payload)} doctors (excluded {excluded_count} 'Exclude' records)")
+print(f"Seeding {len(doc_payload)} doctors (excluded {excluded_count} 'Exclude')...")
+print(f"  Spec breakdown:")
+from collections import Counter
+cats = Counter(d['spec_category'] for d in doc_payload)
+for cat, cnt in cats.most_common():
+    print(f"    {cat}: {cnt}")
 
 # Batch insert
 batch_size = 100
@@ -160,4 +152,4 @@ for i in range(0, len(doc_payload), batch_size):
         seeded += len(batch)
         print(f"  Seeded {seeded}/{len(doc_payload)}")
 
-print(f"\n=== Done! Seeded {seeded} doctors. Errors: {errors}. Excluded: {excluded_count} ===")
+print(f"\n=== DONE! Seeded {seeded}. Errors: {errors}. Excluded: {excluded_count}. ===")
