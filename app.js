@@ -51,10 +51,20 @@ async function fetchZones() {
 }
 
 async function fetchDoctors() {
-    const { data, error } = await db.from('doctors').select('*');
-    if (error) { console.error(error); showError('Failed to load directory.'); return; }
+    // Paginate to get ALL records (Supabase default limit is 1000)
+    let allData = [];
+    let from = 0;
+    const pageSize = 1000;
+    while (true) {
+        const { data, error } = await db.from('doctors').select('*').range(from, from + pageSize - 1);
+        if (error) { console.error(error); showError('Failed to load directory.'); return; }
+        if (!data || data.length === 0) break;
+        allData = allData.concat(data);
+        if (data.length < pageSize) break;  // last page
+        from += pageSize;
+    }
     // Filter out "Exclude" specialization entirely
-    doctorsData = (data || []).filter(d => (d.specialization || '').trim().toLowerCase() !== 'exclude');
+    doctorsData = allData.filter(d => (d.specialization || '').trim().toLowerCase() !== 'exclude');
     renderDoctors(getFilteredDoctors());
 }
 
