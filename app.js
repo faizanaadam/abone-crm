@@ -245,7 +245,7 @@ function showDetail(id) {
     detailCard.classList.remove('hidden');
     detailCard.classList.add('flex');
 
-    setSheetState('half');
+    if (isMobile()) setSheetState('half');
 
     // Build detail HTML
     const rating  = parseFloat(doc.hospital_rating) || 0;
@@ -340,10 +340,13 @@ function backToList() {
         if (m.getElement()) L.DomUtil.removeClass(m.getElement(), 'marker-blinking');
     }
     activeDoctorId = null;
-    setSheetState('half');
+    if (isMobile()) setSheetState('half');
 }
 
-// ── Bottom Sheet (3 snap points) ──────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function isMobile() { return window.innerWidth < 768; }
+
+// ── Bottom Sheet (3 snap points — mobile only) ────────────────────────────────
 let setSheetState;
 function setupBottomSheet() {
     const sheet      = document.getElementById('bottomSheet');
@@ -361,6 +364,12 @@ function setupBottomSheet() {
     });
 
     setSheetState = function(state) {
+        if (!isMobile()) {
+            // Desktop: sidebar is always visible, no transforms
+            sheet.style.transition = 'none';
+            sheet.style.transform  = 'none';
+            return;
+        }
         const y = snapY();
         const val = state === 'full' ? y.full : state === 'half' ? y.half : y.peek;
         sheet.style.transition = 'transform 0.32s cubic-bezier(0.25, 0.8, 0.25, 1)';
@@ -371,6 +380,7 @@ function setupBottomSheet() {
     let startY, startTranslate, dragging = false;
 
     handle.addEventListener('touchstart', e => {
+        if (!isMobile()) return;
         startY = e.touches[0].clientY;
         const m = (sheet.style.transform || '').match(/translateY\((.+)px\)/);
         startTranslate = m ? parseFloat(m[1]) : snapY().peek;
@@ -398,8 +408,11 @@ function setupBottomSheet() {
         else                                   setSheetState('peek');
     });
 
-    window.addEventListener('resize', () => setSheetState(sheet._state || 'half'));
-    setSheetState('half');
+    window.addEventListener('resize', () => {
+        if (isMobile()) setSheetState(sheet._state || 'half');
+        else setSheetState('desktop');
+    });
+    if (isMobile()) setSheetState('half');
 }
 
 // ── Event Listeners ───────────────────────────────────────────────────────────
