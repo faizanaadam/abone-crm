@@ -163,7 +163,6 @@ function getNavUrl(doc) {
 }
 
 // ── Render Doctors ────────────────────────────────────────────────────────────
-// ── Render Doctors ────────────────────────────────────────────────────────────
 function renderDoctors(docs) {
     const list = document.getElementById('doctorList');
     list.innerHTML = '';
@@ -248,87 +247,6 @@ function renderDoctors(docs) {
     list.appendChild(frag);
 }
 
-    const list = document.getElementById('doctorList');
-    list.innerHTML = '';
-    markerCluster.clearLayers();
-    markersMap.clear();
-
-    document.getElementById('doctorCount').textContent = `${docs.length} doctors`;
-
-    if (!docs.length) {
-        list.innerHTML = '<div class="text-slate-400 text-center py-10 text-sm">No doctors found.</div>';
-        return;
-    }
-
-    const frag = document.createDocumentFragment();
-
-    docs.forEach(doc => {
-        // Bounding box guard
-        if (doc.lat && doc.lon) {
-            if (doc.lat < 12.7 || doc.lat > 13.25 || doc.lon < 77.3 || doc.lon > 77.85) return;
-        }
-
-        // ── Map Marker ───────────────────────────────────────────────────────
-        if (doc.lat && doc.lon) {
-            const specClass = getSpecClass(doc);
-            const icon = L.divIcon({
-                className: `custom-marker ${specClass}`,
-                iconSize: [30, 42],
-                iconAnchor: [15, 42],
-                html: `<div class="marker-pin"></div>`
-            });
-            const marker = L.marker([doc.lat, doc.lon], { icon });
-
-            // Immediate navigation on marker click
-            marker.on('click', () => window.open(getNavUrl(doc), '_blank'));
-
-            markerCluster.addLayer(marker);
-            markersMap.set(doc.id, marker);
-        }
-
-        // ── Sidebar Card ─────────────────────────────────────────────────────
-        const card = document.createElement('div');
-        card.id = `doc-card-${doc.id}`;
-        card.className = 'doctor-card bg-white border border-slate-100 mx-3 my-1.5 rounded-2xl p-4 cursor-pointer shadow-sm';
-
-        const specBadge = doc.spec_category || 'General';
-        const badgeColor = { Spine: 'bg-green-100 text-green-700', Trauma: 'bg-orange-100 text-orange-700',
-                             Both: 'bg-yellow-100 text-yellow-700', General: 'bg-blue-100 text-blue-700' }[specBadge] || 'bg-slate-100 text-slate-600';
-
-        card.innerHTML = `
-            <div class="flex justify-between items-start gap-2">
-                <div class="min-w-0">
-                    <h3 class="font-bold text-slate-800 text-sm leading-tight truncate">${doc.name}</h3>
-                    <p class="text-xs text-slate-500 truncate mt-0.5">${doc.hospitals_practice || doc.clinic_name || '—'}</p>
-                </div>
-                <span class="flex-shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full ${badgeColor}">${specBadge}</span>
-            </div>
-            ${doc.phone ? `
-            <div class="mt-2.5 flex gap-2">
-                <a href="tel:${doc.phone}" onclick="event.stopPropagation()"
-                   class="flex-1 bg-green-600 text-white text-xs py-2 rounded-xl font-semibold flex items-center justify-center gap-1 active:scale-95 transition-transform">
-                    <i class="ph-fill ph-phone"></i> Call
-                </a>
-                <button onclick="event.stopPropagation(); showDetail(${doc.id})"
-                   class="flex-1 bg-slate-100 text-slate-700 text-xs py-2 rounded-xl font-semibold flex items-center justify-center gap-1 active:scale-95 transition-transform">
-                    <i class="ph ph-info"></i> Details
-                </button>
-            </div>` : `
-            <div class="mt-2.5">
-                <button onclick="event.stopPropagation(); showDetail(${doc.id})"
-                   class="w-full bg-slate-100 text-slate-700 text-xs py-2 rounded-xl font-semibold flex items-center justify-center gap-1 active:scale-95 transition-transform">
-                    <i class="ph ph-info"></i> View Details
-                </button>
-            </div>`}
-        `;
-        card.onclick = () => showDetail(doc.id);
-        frag.appendChild(card);
-    });
-
-    list.appendChild(frag);
-}
-
-// ── Detail View ───────────────────────────────────────────────────────────────
 // ── Detail View ───────────────────────────────────────────────────────────────
 function showDetail(id) {
     const doc = doctorsData.find(d => d.id === id);
@@ -409,7 +327,7 @@ function showDetail(id) {
         </div>
     `;
 
-    // Fly map to marker and blink
+    // Fly map to marker, open its name popup, and blink
     const marker = markersMap.get(id);
     if (marker) {
         if (activeDoctorId && markersMap.has(activeDoctorId)) {
@@ -418,7 +336,6 @@ function showDetail(id) {
         }
         activeDoctorId = id;
         map.flyTo(marker.getLatLng(), 16, { animate: true, duration: 1 });
-        // Open popup after animation (or immediately)
         marker.openPopup();
         setTimeout(() => {
             if (marker.getElement()) L.DomUtil.addClass(marker.getElement(), 'marker-blinking');
@@ -426,100 +343,6 @@ function showDetail(id) {
     }
 }
 
-    const doc = doctorsData.find(d => d.id === id);
-    if (!doc) return;
-
-    // Swap views
-    document.getElementById('doctorList').classList.add('hidden');
-    const detailCard = document.getElementById('detail-card');
-    detailCard.classList.remove('hidden');
-    detailCard.classList.add('flex');
-
-    if (isMobile()) setSheetState('half');
-
-    // Build detail HTML
-    const rating  = parseFloat(doc.hospital_rating) || 0;
-    const reviews = doc.hospital_reviews ? `(${doc.hospital_reviews})` : '';
-    let starsHtml = '';
-    if (rating > 0) {
-        for (let i = 1; i <= 5; i++) {
-            if (i <= rating)        starsHtml += '<i class="ph-fill ph-star text-yellow-400 text-sm"></i>';
-            else if (i-0.5 <= rating) starsHtml += '<i class="ph-fill ph-star-half text-yellow-400 text-sm"></i>';
-            else                    starsHtml += '<i class="ph ph-star text-slate-300 text-sm"></i>';
-        }
-        starsHtml += `<span class="text-xs text-slate-500 ml-1">${rating} ${reviews}</span>`;
-    } else {
-        starsHtml = '<span class="text-xs text-slate-400">No ratings</span>';
-    }
-
-    const approxWarning = doc.is_approximate ? `
-        <div class="flex items-start gap-2 bg-orange-50 border border-orange-200 rounded-xl p-3 mb-4">
-            <span class="text-lg">📍</span>
-            <p class="text-xs text-orange-700 font-medium">Location estimated. Opening Google Search for this clinic.</p>
-        </div>` : '';
-
-    const navUrl = getNavUrl(doc);
-
-    document.getElementById('detailContent').innerHTML = `
-        <div class="p-5 pb-2">
-            ${approxWarning}
-            <h2 class="text-xl font-bold text-slate-800 leading-tight">${doc.name}</h2>
-            <p class="text-sm text-slate-500 mt-1 mb-4">${doc.specialization || 'General Ortho'}</p>
-
-            <div class="space-y-3">
-                <div class="bg-slate-50 rounded-xl p-3.5 border border-slate-100">
-                    <div class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Clinic / Hospital</div>
-                    <div class="text-sm font-medium text-slate-700">${doc.clinic_name || doc.hospitals_practice || '—'}</div>
-                    <div class="flex items-center mt-1.5">${starsHtml}</div>
-                </div>
-
-                <div class="bg-slate-50 rounded-xl p-3.5 border border-slate-100">
-                    <div class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Consultation Timing</div>
-                    <div class="text-sm text-slate-700">${doc.consultation_timing || 'Not available'}</div>
-                </div>
-
-                <div class="bg-slate-50 rounded-xl p-3.5 border border-slate-100">
-                    <div class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Address</div>
-                    <div class="text-sm text-slate-700">${doc.hospital_address || doc.clinic_location || 'Not available'}</div>
-                    <a href="${navUrl}" target="_blank"
-                       class="mt-2 inline-flex items-center gap-1 text-xs font-bold text-blue-600 hover:underline">
-                        <i class="ph ph-navigation-arrow"></i> Open in Google Maps
-                    </a>
-                </div>
-
-                ${doc.phone ? `
-                <a href="tel:${doc.phone}"
-                   class="flex items-center justify-center gap-2 w-full bg-green-600 text-white py-4 rounded-2xl font-bold text-base shadow-md active:scale-95 transition-transform mt-4">
-                    <i class="ph-fill ph-phone text-xl"></i> Call Doctor
-                </a>` : `
-                <button disabled class="w-full bg-slate-200 text-slate-400 py-4 rounded-2xl font-bold text-base flex items-center justify-center gap-2 cursor-not-allowed mt-4">
-                    <i class="ph-fill ph-phone-slash text-xl"></i> No Phone Listed
-                </button>`}
-
-                <button onclick="openEditModal(${doc.id})"
-                   class="w-full bg-blue-50 text-blue-700 border border-blue-200 py-3 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 active:scale-95 transition-transform">
-                    <i class="ph-fill ph-pencil-simple"></i> Edit Notes
-                </button>
-            </div>
-        </div>
-    `;
-
-    // Fly map to marker and blink
-    const marker = markersMap.get(id);
-    if (marker) {
-        if (activeDoctorId && markersMap.has(activeDoctorId)) {
-            const prev = markersMap.get(activeDoctorId);
-            if (prev.getElement()) L.DomUtil.removeClass(prev.getElement(), 'marker-blinking');
-        }
-        activeDoctorId = id;
-        map.flyTo(marker.getLatLng(), 16, { animate: true, duration: 1 });
-        setTimeout(() => {
-            if (marker.getElement()) L.DomUtil.addClass(marker.getElement(), 'marker-blinking');
-        }, 1000);
-    }
-}
-
-// ── Back to List ──────────────────────────────────────────────────────────────
 // ── Back to List ──────────────────────────────────────────────────────────────
 function backToList() {
     document.getElementById('detail-card').classList.add('hidden');
@@ -529,20 +352,7 @@ function backToList() {
     if (activeDoctorId && markersMap.has(activeDoctorId)) {
         const m = markersMap.get(activeDoctorId);
         if (m.getElement()) L.DomUtil.removeClass(m.getElement(), 'marker-blinking');
-        // Close the popup if it's open
         if (m.closePopup) m.closePopup();
-    }
-    activeDoctorId = null;
-    if (isMobile()) setSheetState('half');
-}
-
-    document.getElementById('detail-card').classList.add('hidden');
-    document.getElementById('detail-card').classList.remove('flex');
-    document.getElementById('doctorList').classList.remove('hidden');
-
-    if (activeDoctorId && markersMap.has(activeDoctorId)) {
-        const m = markersMap.get(activeDoctorId);
-        if (m.getElement()) L.DomUtil.removeClass(m.getElement(), 'marker-blinking');
     }
     activeDoctorId = null;
     if (isMobile()) setSheetState('half');
