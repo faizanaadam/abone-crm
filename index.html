@@ -2,8 +2,9 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Abone Surgicals CRM</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Abone Surgicals CRM · Bangalore</title>
+    <meta name="description" content="Abone Surgicals geographic lead directory for 1,244 orthopaedic doctors across Bangalore.">
     <!-- Tailwind CSS (Compiled via Netlify CI/CD) -->
     <link rel="stylesheet" href="tailwind.css" />
     <!-- Leaflet CSS -->
@@ -18,69 +19,106 @@
     <!-- Phosphor Icons -->
     <script src="https://unpkg.com/@phosphor-icons/web"></script>
 </head>
-<body class="bg-slate-50 text-slate-900 h-screen overflow-hidden flex flex-col md:flex-row">
-    <!-- Sidebar / Bottom Sheet -->
-    <aside id="bottomSheet" class="fixed inset-x-0 bottom-0 md:relative w-full md:w-[400px] bg-white md:border-r border-slate-200 flex flex-col h-[90vh] md:h-screen z-[1000] md:z-10 shadow-[0_-10px_40px_rgba(0,0,0,0.15)] md:shadow-xl shrink-0 order-2 md:order-1 rounded-t-3xl md:rounded-none transition-transform duration-300 transform translate-y-[calc(100%-60px)] md:translate-y-0 will-change-transform">
-        <!-- Drag Handle (Mobile Only) -->
-        <div class="w-full flex justify-center pt-3 pb-2 md:hidden cursor-grab active:cursor-grabbing touch-none" id="dragHandle">
-            <div class="w-12 h-1.5 bg-slate-300 rounded-full pointer-events-none"></div>
+<body class="bg-slate-900 text-slate-900 h-screen overflow-hidden">
+
+    <!-- MAP fills the full background -->
+    <main class="fixed inset-0 z-0">
+        <div id="map" class="w-full h-full"></div>
+    </main>
+
+    <!-- FAB: Near Me — positioned above the bottom sheet handle -->
+    <button id="nearMeBtn"
+        class="fixed bottom-[72px] right-4 z-[500] bg-white text-blue-600 p-3.5 rounded-full shadow-2xl hover:bg-blue-50 transition-all active:scale-95 border border-blue-100"
+        title="Find Nearest Doctors">
+        <i class="ph-fill ph-navigation-arrow text-2xl"></i>
+    </button>
+
+    <!-- ============================================================
+         BOTTOM SHEET
+         Default snap: PEEK (only handle visible, ~56px above bottom)
+         ============================================================ -->
+    <aside id="bottomSheet"
+        class="fixed inset-x-0 bottom-0 z-[400] bg-white rounded-t-3xl flex flex-col will-change-transform"
+        style="height: 92vh; transform: translateY(calc(92vh - 56px));">
+
+        <!-- DRAG HANDLE -->
+        <div id="dragHandle" class="flex-shrink-0 flex justify-center items-center py-3 cursor-grab active:cursor-grabbing touch-none select-none" style="height: 56px;">
+            <div class="w-10 h-1.5 bg-slate-300 rounded-full"></div>
         </div>
-        
-        <div class="p-4 border-b border-slate-200 bg-white/80 backdrop-blur-md sticky top-0 z-20">
-            <h1 class="text-xl font-bold text-slate-800 flex items-center gap-2">
-                <i class="ph-fill ph-pulse text-red-500"></i> Abone CRM
-            </h1>
-            <p class="text-xs text-slate-500 mt-1">Bangalore Lead Directory</p>
-            
-            <div class="mt-3">
-                <div class="relative">
-                    <i class="ph ph-magnifying-glass absolute left-3 top-2.5 text-slate-400"></i>
-                    <input type="text" id="searchInput" placeholder="Search doctors, hospitals..." class="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all">
+
+        <!-- HEADER: Search + Zone Filters + Spec Filters -->
+        <div id="sheetHeader" class="flex-shrink-0 px-4 pb-3 border-b border-slate-100 bg-white">
+            <!-- Title Row -->
+            <div class="flex items-center justify-between mb-3">
+                <div>
+                    <h1 class="text-base font-bold text-slate-800 flex items-center gap-1.5">
+                        <i class="ph-fill ph-pulse text-red-500"></i> Abone CRM
+                    </h1>
+                    <p class="text-xs text-slate-400" id="doctorCount">Loading directory...</p>
+                </div>
+                <div id="db-status" class="flex items-center gap-1.5">
+                    <div class="w-2 h-2 rounded-full bg-slate-300" id="db-dot"></div>
+                    <span class="text-xs text-slate-400" id="db-label">Connecting</span>
                 </div>
             </div>
-            
-            <div class="mt-3 flex gap-2 overflow-x-auto pb-1 hide-scrollbar" id="zoneFilters">
-                <button class="zone-filter active" data-zone="all">All Zones</button>
+
+            <!-- Search -->
+            <div class="relative mb-2.5">
+                <i class="ph ph-magnifying-glass absolute left-3 top-2.5 text-slate-400 text-sm"></i>
+                <input type="text" id="searchInput"
+                    placeholder="Search doctors, hospitals..."
+                    class="w-full pl-8 pr-3 py-2 bg-slate-100 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all border-0">
+            </div>
+
+            <!-- Zone Filters -->
+            <div class="flex gap-2 overflow-x-auto pb-1 hide-scrollbar mb-2" id="zoneFilters">
+                <button class="zone-filter active" data-zone="all" id="zoneAll">All Zones</button>
                 <!-- Zone buttons injected here -->
             </div>
-        </div>
-        
-        <div class="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50/50" id="doctorList">
-            <div class="text-center text-slate-400 py-10" id="loadingState">
-                <i class="ph ph-spinner-gap animate-spin text-3xl"></i>
-                <p class="text-sm mt-2">Loading Directory...</p>
+
+            <!-- Specialization Filters -->
+            <div class="flex gap-2 overflow-x-auto pb-1 hide-scrollbar" id="specFilters">
+                <button class="spec-filter active" data-spec="all">All Types</button>
+                <button class="spec-filter" data-spec="Spine">🔵 Spine</button>
+                <button class="spec-filter" data-spec="Trauma">🟠 Trauma</button>
+                <button class="spec-filter" data-spec="Both">🟡 Both</button>
+                <button class="spec-filter" data-spec="General">⚪ General</button>
             </div>
         </div>
-        
-        <!-- Detail View (Hidden by default) -->
-        <div class="flex-1 overflow-y-auto bg-slate-50/50 hidden flex-col" id="detail-card">
-            <div class="sticky top-0 bg-white border-b border-slate-200 p-3 z-10 shadow-sm">
-                <button id="backToListBtn" class="flex items-center gap-1 text-sm font-semibold text-blue-600 hover:text-blue-800 transition-colors">
-                    <i class="ph ph-arrow-left"></i> Back to List
+
+        <!-- DOCTOR LIST VIEW -->
+        <div class="flex-1 overflow-y-auto" id="doctorList">
+            <div class="flex flex-col items-center justify-center py-16 text-slate-400" id="loadingState">
+                <i class="ph ph-spinner-gap animate-spin text-4xl mb-3"></i>
+                <p class="text-sm">Loading Directory...</p>
+            </div>
+        </div>
+
+        <!-- DETAIL VIEW (hidden by default) -->
+        <div class="flex-1 flex-col overflow-hidden hidden" id="detail-card">
+            <!-- Scrollable content -->
+            <div class="flex-1 overflow-y-auto" id="detailContent">
+                <!-- Injected via JS -->
+            </div>
+
+            <!-- THUMB-ZONE: Back Button pinned to bottom -->
+            <div class="flex-shrink-0 p-4 border-t border-slate-100 bg-white">
+                <button id="backToListBtn"
+                    class="w-full bg-slate-800 text-white py-4 rounded-2xl font-bold text-base flex items-center justify-center gap-2 active:scale-95 transition-transform shadow-lg">
+                    <i class="ph ph-arrow-left text-xl"></i> Back to Directory
                 </button>
-            </div>
-            <div class="p-5 flex-1" id="detailContent">
-                <!-- Content injected via JS -->
             </div>
         </div>
     </aside>
 
-    <!-- Map Container -->
-    <main class="flex-1 relative h-screen w-full z-0 order-1 md:order-2">
-        <div id="map" class="w-full h-full"></div>
-        
-        <!-- Near Me Button -->
-        <button id="nearMeBtn" class="absolute bottom-24 md:bottom-6 right-4 md:right-6 z-[400] bg-white text-blue-600 p-3 rounded-full shadow-xl hover:bg-blue-50 transition-all active:scale-95 group border border-blue-100" title="Find 10 Closest Doctors">
-            <i class="ph-fill ph-navigation-arrow text-2xl group-hover:animate-pulse"></i>
-        </button>
-    </main>
-
-    <!-- Edit Modal (Hidden by default) -->
-    <div id="editModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[500] hidden items-center justify-center p-4 transition-opacity duration-200 opacity-0">
-        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all scale-95 duration-200" id="editModalContent">
+    <!-- EDIT MODAL -->
+    <div id="editModal" class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-[600] hidden items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden" id="editModalContent">
             <div class="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-                <h3 class="font-bold text-lg text-slate-800 flex items-center gap-2"><i class="ph-fill ph-pencil-simple text-blue-500"></i> Edit Lead</h3>
-                <button id="closeModalBtn" class="text-slate-400 hover:text-slate-600 p-1 rounded-md hover:bg-slate-200 transition-colors">
+                <h3 class="font-bold text-lg text-slate-800 flex items-center gap-2">
+                    <i class="ph-fill ph-pencil-simple text-blue-500"></i> Edit Lead
+                </h3>
+                <button id="closeModalBtn" class="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-200 transition-colors">
                     <i class="ph ph-x text-xl"></i>
                 </button>
             </div>

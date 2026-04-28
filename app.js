@@ -1,55 +1,50 @@
-// Supabase Configuration
+// ── Supabase ──────────────────────────────────────────────────────────────────
 const supabaseUrl = 'https://jrvghcxtrpdmyhgjypms.supabase.co';
 const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpydmdoY3h0cnBkbXloZ2p5cG1zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcxMDA4ODIsImV4cCI6MjA5MjY3Njg4Mn0.UVlzfHUnkpWQPt-RAmK9m2cpoX20GQNsEPs9m1w8bto';
 const db = window.supabase.createClient(supabaseUrl, supabaseKey);
 
-// State
-let map;
-let markerCluster;
+// ── State ─────────────────────────────────────────────────────────────────────
+let map, markerCluster;
 let doctorsData = [];
-let zonesData = [];
-let markersMap = new Map(); // id -> leaflet marker
-let polygonsMap = new Map(); // zone_id -> leaflet polygon
+let zonesData   = [];
+let markersMap  = new Map();   // id → leaflet marker
+let polygonsMap = new Map();   // zone_id → leaflet polygon
 let activeDoctorId = null;
+let activeZone  = 'all';
+let activeSpec  = 'all';
 
-// Colors
-const zoneColors = ['#ef4444', '#f97316', '#f59e0b', '#84cc16', '#22c55e', '#10b981', '#06b6d4', '#3b82f6', '#6366f1', '#a855f7'];
+const ZONE_COLORS = ['#ef4444','#f97316','#f59e0b','#84cc16','#22c55e',
+                     '#10b981','#06b6d4','#3b82f6','#6366f1','#a855f7'];
 
+// ── Boot ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
     initMap();
+    setupBottomSheet();
+    setupEventListeners();
     await fetchZones();
     await fetchDoctors();
-    setupEventListeners();
     setupRealtime();
+    setDbStatus(true);
 });
 
+// ── Map Init ──────────────────────────────────────────────────────────────────
 function initMap() {
-    map = L.map('map', {
-        zoomControl: false,
-        touchZoom: true,
-        dragging: true,
-        tap: false // disables default tap logic that sometimes interferes on mobile
-    }).setView([12.9716, 77.5946], 11); // Center Bangalore
+    map = L.map('map', { zoomControl: false, touchZoom: true, dragging: true, tap: false })
+           .setView([12.9716, 77.5946], 11);
+
     L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-        attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
-        subdomains: 'abcd',
-        maxZoom: 20
+        attribution: '© OpenStreetMap contributors © CARTO',
+        subdomains: 'abcd', maxZoom: 20
     }).addTo(map);
 
-    markerCluster = L.markerClusterGroup({
-        chunkedLoading: true,
-        maxClusterRadius: 40,
-        spiderfyOnMaxZoom: true
-    });
+    markerCluster = L.markerClusterGroup({ chunkedLoading: true, maxClusterRadius: 40, spiderfyOnMaxZoom: true });
     map.addLayer(markerCluster);
 }
 
+// ── Supabase Fetch ────────────────────────────────────────────────────────────
 async function fetchZones() {
     const { data, error } = await db.from('zones').select('*');
-    if (error) {
-        console.error('Error fetching zones:', error);
-        return;
-    }
+    if (error) { console.error(error); return; }
     zonesData = data;
     renderZoneFilters();
     drawZonePolygons();
@@ -57,556 +52,477 @@ async function fetchZones() {
 
 async function fetchDoctors() {
     const { data, error } = await db.from('doctors').select('*');
-    if (error) {
-        console.error('Error fetching doctors:', error);
-        document.getElementById('doctorList').innerHTML = '<div class="text-red-500 text-center p-4">Failed to load directory.</div>';
-        return;
-    }
-    doctorsData = data;
-    renderDoctors(doctorsData);
+    if (error) { console.error(error); showError('Failed to load directory.'); return; }
+    // Filter out "Exclude" specialization entirely
+    doctorsData = (data || []).filter(d => (d.specialization || '').trim().toLowerCase() !== 'exclude');
+    renderDoctors(getFilteredDoctors());
 }
 
+// ── Filtering helpers ─────────────────────────────────────────────────────────
+function getFilteredDoctors() {
+    let list = doctorsData;
+    if (activeZone !== 'all') list = list.filter(d => d.zone_id == activeZone);
+    if (activeSpec !== 'all') list = list.filter(d => (d.spec_category || 'General') === activeSpec);
+    return list;
+}
+
+// ── Zone Filters ──────────────────────────────────────────────────────────────
 function renderZoneFilters() {
     const container = document.getElementById('zoneFilters');
-    // Keep 'All Zones' button, remove others if re-rendering
-    const allBtn = container.querySelector('[data-zone="all"]');
+    const allBtn = document.getElementById('zoneAll');
     container.innerHTML = '';
     container.appendChild(allBtn);
-
-    zonesData.forEach(zone => {
+    zonesData.forEach(z => {
         const btn = document.createElement('button');
         btn.className = 'zone-filter';
-        btn.dataset.zone = zone.id;
-        btn.textContent = zone.name;
-        btn.onclick = () => filterByZone(zone.id);
+        btn.dataset.zone = z.id;
+        btn.textContent = z.name;
+        btn.onclick = () => setZoneFilter(z.id);
         container.appendChild(btn);
     });
-
-    allBtn.onclick = () => filterByZone('all');
+    allBtn.onclick = () => setZoneFilter('all');
 }
 
-function drawZonePolygons() {
-    zonesData.forEach((zone, index) => {
-        if (zone.polygon_coords && zone.polygon_coords.length > 0) {
-            const color = zoneColors[index % zoneColors.length];
-            const polygon = L.polygon(zone.polygon_coords, {
-                color: color,
-                fillColor: color,
-                fillOpacity: 0.1,
-                weight: 2,
-                opacity: 0.8
-            }).addTo(map);
-            
-            polygon.bindTooltip(`<b>Zone ${zone.id}:</b> ${zone.name}`, { sticky: true });
-            
-            // Clicking polygon filters to that zone
-            polygon.on('click', () => {
-                filterByZone(zone.id);
-                map.fitBounds(polygon.getBounds());
-            });
+function setZoneFilter(zoneId) {
+    activeZone = zoneId;
+    document.querySelectorAll('.zone-filter').forEach(b => b.classList.toggle('active', b.dataset.zone == zoneId));
 
-            polygonsMap.set(zone.id, polygon);
+    polygonsMap.forEach((poly, id) => {
+        if (zoneId === 'all') {
+            poly.setStyle({ weight: 2, opacity: 0.7, fillOpacity: 0.08 });
+        } else if (id == zoneId) {
+            poly.setStyle({ weight: 5, opacity: 0.7, fillOpacity: 0.7 });
+        } else {
+            poly.setStyle({ weight: 1, opacity: 0.05, fillOpacity: 0.05 });
         }
+    });
+
+    if (zoneId !== 'all') {
+        const poly = polygonsMap.get(zoneId);
+        if (poly) map.fitBounds(poly.getBounds(), { padding: [20, 20] });
+    } else {
+        map.setView([12.9716, 77.5946], 11);
+    }
+    renderDoctors(getFilteredDoctors());
+}
+
+function setSpecFilter(spec) {
+    activeSpec = spec;
+    document.querySelectorAll('.spec-filter').forEach(b => b.classList.toggle('active', b.dataset.spec === spec));
+    renderDoctors(getFilteredDoctors());
+}
+
+// ── Draw Polygons ─────────────────────────────────────────────────────────────
+function drawZonePolygons() {
+    zonesData.forEach((zone, i) => {
+        if (!zone.polygon_coords || !zone.polygon_coords.length) return;
+        const color = ZONE_COLORS[i % ZONE_COLORS.length];
+        const poly = L.polygon(zone.polygon_coords, {
+            color, fillColor: color, fillOpacity: 0.08, weight: 2, opacity: 0.7
+        }).addTo(map);
+        poly.bindTooltip(`<b>Zone ${zone.id}:</b> ${zone.name}`, { sticky: true });
+        poly.on('click', () => setZoneFilter(zone.id));
+        polygonsMap.set(zone.id, poly);
     });
 }
 
-function getSpecClass(specialization) {
-    if (!specialization) return 'spec-unknown';
-    const spec = specialization.toLowerCase();
-    if (spec.includes('spine') && spec.includes('trauma')) return 'spec-spine-trauma';
-    if (spec.includes('spine')) return 'spec-spine';
-    if (spec.includes('trauma')) return 'spec-trauma';
-    if (spec.includes('general') || spec.includes('ortho')) return 'spec-general';
-    return 'spec-unknown';
+// ── Marker icon ───────────────────────────────────────────────────────────────
+function getSpecClass(doc) {
+    if (doc.is_approximate) return 'spec-approximate';
+    const cat = (doc.spec_category || '').toLowerCase();
+    if (cat === 'spine')   return 'spec-spine';
+    if (cat === 'trauma')  return 'spec-trauma';
+    if (cat === 'both')    return 'spec-both';
+    return 'spec-general';
 }
 
+// ── Navigation URL (3-tier priority) ─────────────────────────────────────────
+function getNavUrl(doc) {
+    // Priority 1: explicit Google Maps link
+    if (doc.hospital_maps_link && doc.hospital_maps_link.startsWith('http')) {
+        return doc.hospital_maps_link;
+    }
+    // Priority 2: precise coordinates (Blue Pin)
+    if (!doc.is_approximate && doc.lat && doc.lon) {
+        return `https://www.google.com/maps/search/?api=1&query=${doc.lat},${doc.lon}`;
+    }
+    // Priority 3: approximate (Grey Circle) — search by name + area
+    const clinicPart = encodeURIComponent((doc.clinic_name || doc.hospitals_practice || doc.name || '').trim());
+    const areaPart   = encodeURIComponent((doc.area_name || '').trim());
+    return `https://www.google.com/maps/search/?api=1&query=${clinicPart}+${areaPart}+Bangalore`;
+}
+
+// ── Render Doctors ────────────────────────────────────────────────────────────
 function renderDoctors(docs) {
     const list = document.getElementById('doctorList');
     list.innerHTML = '';
     markerCluster.clearLayers();
     markersMap.clear();
 
-    if (docs.length === 0) {
-        list.innerHTML = '<div class="text-slate-500 text-center p-8">No doctors found.</div>';
+    document.getElementById('doctorCount').textContent = `${docs.length} doctors`;
+
+    if (!docs.length) {
+        list.innerHTML = '<div class="text-slate-400 text-center py-10 text-sm">No doctors found.</div>';
         return;
     }
 
+    const frag = document.createDocumentFragment();
+
     docs.forEach(doc => {
-        // --- Bounding Box Filter ---
+        // Bounding box guard
         if (doc.lat && doc.lon) {
-            if (doc.lat < 12.7 || doc.lat > 13.25 || doc.lon < 77.3 || doc.lon > 77.85) {
-                return; // skip out of bounds
-            }
+            if (doc.lat < 12.7 || doc.lat > 13.25 || doc.lon < 77.3 || doc.lon > 77.85) return;
         }
 
-        // --- 1. Map Marker ---
+        // ── Map Marker ───────────────────────────────────────────────────────
         if (doc.lat && doc.lon) {
-            const specClass = doc.is_approximate ? 'spec-approximate' : 'spec-general';
+            const specClass = getSpecClass(doc);
             const icon = L.divIcon({
                 className: `custom-marker ${specClass}`,
-                iconSize: [30, 30],
-                iconAnchor: [15, 30],
+                iconSize: [30, 42],
+                iconAnchor: [15, 42],
                 html: `<div class="marker-pin"></div>`
             });
-
             const marker = L.marker([doc.lat, doc.lon], { icon });
-            marker.bindTooltip(`<b>${doc.name}</b>`, { direction: 'top', offset: [0, -30] });
 
-            marker.on('click', () => {
-                const mapLink = doc.hospital_maps_link || `https://www.google.com/maps?q=${doc.lat},${doc.lon}`;
-                window.open(mapLink, '_blank');
-            });
+            // Immediate navigation on marker click
+            marker.on('click', () => window.open(getNavUrl(doc), '_blank'));
+
             markerCluster.addLayer(marker);
             markersMap.set(doc.id, marker);
         }
 
-        // --- 2. Sidebar Card ---
+        // ── Sidebar Card ─────────────────────────────────────────────────────
         const card = document.createElement('div');
         card.id = `doc-card-${doc.id}`;
-        card.className = 'doctor-card bg-white border border-slate-200 rounded-xl p-4 min-h-[80px] cursor-pointer relative overflow-hidden group';
-        
+        card.className = 'doctor-card bg-white border border-slate-100 mx-3 my-1.5 rounded-2xl p-4 cursor-pointer shadow-sm';
+
+        const specBadge = doc.spec_category || 'General';
+        const badgeColor = { Spine: 'bg-green-100 text-green-700', Trauma: 'bg-orange-100 text-orange-700',
+                             Both: 'bg-yellow-100 text-yellow-700', General: 'bg-blue-100 text-blue-700' }[specBadge] || 'bg-slate-100 text-slate-600';
+
         card.innerHTML = `
-            <div class="flex justify-between items-start mb-2">
-                <div>
-                    <h3 class="font-bold text-slate-800 text-sm">${doc.name}</h3>
-                    <p class="text-xs font-medium text-slate-500">${doc.specialization || 'General Ortho'}</p>
+            <div class="flex justify-between items-start gap-2">
+                <div class="min-w-0">
+                    <h3 class="font-bold text-slate-800 text-sm leading-tight truncate">${doc.name}</h3>
+                    <p class="text-xs text-slate-500 truncate mt-0.5">${doc.hospitals_practice || doc.clinic_name || '—'}</p>
                 </div>
-                ${doc.koa_no ? `<span class="bg-slate-100 text-slate-600 text-[10px] font-bold px-2 py-1 rounded border border-slate-200">${doc.koa_no}</span>` : ''}
+                <span class="flex-shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full ${badgeColor}">${specBadge}</span>
             </div>
-            
-            <div class="space-y-1.5 mt-3">
-                <div class="flex items-start gap-2 text-xs text-slate-600">
-                    <i class="ph-fill ph-hospital mt-0.5 text-slate-400"></i>
-                    <span class="line-clamp-2">${doc.hospitals_practice || doc.clinic_name || 'N/A'}</span>
-                </div>
-                ${doc.phone ? `
-                <div class="flex items-center gap-2 text-xs text-slate-600">
-                    <i class="ph-fill ph-phone text-slate-400"></i>
-                    <a href="tel:${doc.phone}" class="text-blue-600 hover:underline" onclick="event.stopPropagation()">${doc.phone}</a>
-                </div>` : ''}
-                ${doc.rep_notes ? `
-                <div class="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 p-2 rounded border border-amber-100 mt-2">
-                    <i class="ph-fill ph-notebook mt-0.5"></i>
-                    <span class="italic">"${doc.rep_notes}"</span>
-                </div>` : ''}
-            </div>
-
-            <div class="mt-4 pt-3 border-t border-slate-100 flex gap-2">
-                <button class="flex-1 bg-slate-100 text-slate-700 text-xs py-1.5 rounded font-medium hover:bg-slate-200 transition flex items-center justify-center gap-1" onclick="event.stopPropagation(); locateDoctor(${doc.id})">
-                    <i class="ph ph-map-pin"></i> Show on Map
+            ${doc.phone ? `
+            <div class="mt-2.5 flex gap-2">
+                <a href="tel:${doc.phone}" onclick="event.stopPropagation()"
+                   class="flex-1 bg-green-600 text-white text-xs py-2 rounded-xl font-semibold flex items-center justify-center gap-1 active:scale-95 transition-transform">
+                    <i class="ph-fill ph-phone"></i> Call
+                </a>
+                <button onclick="event.stopPropagation(); showDetail(${doc.id})"
+                   class="flex-1 bg-slate-100 text-slate-700 text-xs py-2 rounded-xl font-semibold flex items-center justify-center gap-1 active:scale-95 transition-transform">
+                    <i class="ph ph-info"></i> Details
                 </button>
-                <button class="flex-1 bg-blue-50 text-blue-700 text-xs py-1.5 rounded font-medium hover:bg-blue-100 transition flex items-center justify-center gap-1" onclick="event.stopPropagation(); openEditModal(${doc.id})">
-                    <i class="ph ph-pencil-simple"></i> Edit Notes
+            </div>` : `
+            <div class="mt-2.5">
+                <button onclick="event.stopPropagation(); showDetail(${doc.id})"
+                   class="w-full bg-slate-100 text-slate-700 text-xs py-2 rounded-xl font-semibold flex items-center justify-center gap-1 active:scale-95 transition-transform">
+                    <i class="ph ph-info"></i> View Details
                 </button>
-            </div>
+            </div>`}
         `;
-
-        card.onclick = () => locateDoctor(doc.id);
-        list.appendChild(card);
+        card.onclick = () => showDetail(doc.id);
+        frag.appendChild(card);
     });
 
-    map.addLayer(markerCluster);
+    list.appendChild(frag);
 }
 
-function filterByZone(zoneId) {
-    // Update active button
-    document.querySelectorAll('.zone-filter').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.zone == zoneId);
-    });
-
-    let filtered = doctorsData;
-    if (zoneId !== 'all') {
-        filtered = doctorsData.filter(d => d.zone_id == zoneId);
-        
-        // Highlight Polygon
-        polygonsMap.forEach((poly, id) => {
-            poly.setStyle({ fillOpacity: id == zoneId ? 0.3 : 0.05 });
-        });
-    } else {
-        polygonsMap.forEach(poly => poly.setStyle({ fillOpacity: 0.1 }));
-        map.setView([12.9716, 77.5946], 11);
-    }
-
-    renderDoctors(filtered);
-}
-
-function locateDoctor(id) {
+// ── Detail View ───────────────────────────────────────────────────────────────
+function showDetail(id) {
     const doc = doctorsData.find(d => d.id === id);
     if (!doc) return;
 
-    // View Swapping
+    // Swap views
     document.getElementById('doctorList').classList.add('hidden');
-    document.getElementById('detail-card').classList.remove('hidden');
-    document.getElementById('detail-card').classList.add('flex');
-    
-    // Snap to partial on mobile
-    if (typeof setSheetState === 'function') setSheetState('partial');
-    
-    // Populate Detail View
-    const addressHtml = doc.hospital_address || doc.clinic_location || doc.full_address || 'Address not available';
-    const clinicHtml = doc.clinic_name || doc.hospitals_practice || 'Clinic not available';
-    const timingHtml = doc.consultation_timing || 'Timing not available';
-    
-    // Star rating generator
-    const rating = doc.hospital_rating ? parseFloat(doc.hospital_rating) : 0;
-    const reviews = doc.hospital_reviews ? `(${doc.hospital_reviews} reviews)` : '';
+    const detailCard = document.getElementById('detail-card');
+    detailCard.classList.remove('hidden');
+    detailCard.classList.add('flex');
+
+    setSheetState('half');
+
+    // Build detail HTML
+    const rating  = parseFloat(doc.hospital_rating) || 0;
+    const reviews = doc.hospital_reviews ? `(${doc.hospital_reviews})` : '';
     let starsHtml = '';
     if (rating > 0) {
-        for(let i=1; i<=5; i++) {
-            if (i <= rating) starsHtml += '<i class="ph-fill ph-star text-yellow-400"></i>';
-            else if (i - 0.5 <= rating) starsHtml += '<i class="ph-fill ph-star-half text-yellow-400"></i>';
-            else starsHtml += '<i class="ph-fill ph-star text-slate-300"></i>';
+        for (let i = 1; i <= 5; i++) {
+            if (i <= rating)        starsHtml += '<i class="ph-fill ph-star text-yellow-400 text-sm"></i>';
+            else if (i-0.5 <= rating) starsHtml += '<i class="ph-fill ph-star-half text-yellow-400 text-sm"></i>';
+            else                    starsHtml += '<i class="ph ph-star text-slate-300 text-sm"></i>';
         }
-        starsHtml += ` <span class="text-xs text-slate-500 ml-1">${rating} ${reviews}</span>`;
+        starsHtml += `<span class="text-xs text-slate-500 ml-1">${rating} ${reviews}</span>`;
     } else {
         starsHtml = '<span class="text-xs text-slate-400">No ratings</span>';
     }
-    
-    const mapLink = doc.hospital_maps_link || (doc.lat ? `https://www.google.com/maps?q=${doc.lat},${doc.lon}` : '#');
-    
+
+    const approxWarning = doc.is_approximate ? `
+        <div class="flex items-start gap-2 bg-orange-50 border border-orange-200 rounded-xl p-3 mb-4">
+            <span class="text-lg">📍</span>
+            <p class="text-xs text-orange-700 font-medium">Location estimated. Opening Google Search for this clinic.</p>
+        </div>` : '';
+
+    const navUrl = getNavUrl(doc);
+
     document.getElementById('detailContent').innerHTML = `
-        <h2 class="text-xl font-bold text-slate-800">${doc.name}</h2>
-        <p class="text-sm font-medium text-slate-500 mb-4">${doc.specialization || 'General Ortho'}</p>
-        
-        <div class="space-y-4">
-            <div class="bg-white p-3 rounded-lg border border-slate-200">
-                <div class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Clinic / Hospital</div>
-                <div class="text-sm text-slate-700">${clinicHtml}</div>
-                <div class="mt-1 flex items-center">${starsHtml}</div>
+        <div class="p-5 pb-2">
+            ${approxWarning}
+            <h2 class="text-xl font-bold text-slate-800 leading-tight">${doc.name}</h2>
+            <p class="text-sm text-slate-500 mt-1 mb-4">${doc.specialization || 'General Ortho'}</p>
+
+            <div class="space-y-3">
+                <div class="bg-slate-50 rounded-xl p-3.5 border border-slate-100">
+                    <div class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Clinic / Hospital</div>
+                    <div class="text-sm font-medium text-slate-700">${doc.clinic_name || doc.hospitals_practice || '—'}</div>
+                    <div class="flex items-center mt-1.5">${starsHtml}</div>
+                </div>
+
+                <div class="bg-slate-50 rounded-xl p-3.5 border border-slate-100">
+                    <div class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Consultation Timing</div>
+                    <div class="text-sm text-slate-700">${doc.consultation_timing || 'Not available'}</div>
+                </div>
+
+                <div class="bg-slate-50 rounded-xl p-3.5 border border-slate-100">
+                    <div class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Address</div>
+                    <div class="text-sm text-slate-700">${doc.hospital_address || doc.clinic_location || 'Not available'}</div>
+                    <a href="${navUrl}" target="_blank"
+                       class="mt-2 inline-flex items-center gap-1 text-xs font-bold text-blue-600 hover:underline">
+                        <i class="ph ph-navigation-arrow"></i> Open in Google Maps
+                    </a>
+                </div>
+
+                ${doc.phone ? `
+                <a href="tel:${doc.phone}"
+                   class="flex items-center justify-center gap-2 w-full bg-green-600 text-white py-4 rounded-2xl font-bold text-base shadow-md active:scale-95 transition-transform mt-4">
+                    <i class="ph-fill ph-phone text-xl"></i> Call Doctor
+                </a>` : `
+                <button disabled class="w-full bg-slate-200 text-slate-400 py-4 rounded-2xl font-bold text-base flex items-center justify-center gap-2 cursor-not-allowed mt-4">
+                    <i class="ph-fill ph-phone-slash text-xl"></i> No Phone Listed
+                </button>`}
+
+                <button onclick="openEditModal(${doc.id})"
+                   class="w-full bg-blue-50 text-blue-700 border border-blue-200 py-3 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 active:scale-95 transition-transform">
+                    <i class="ph-fill ph-pencil-simple"></i> Edit Notes
+                </button>
             </div>
-            
-            <div class="bg-white p-3 rounded-lg border border-slate-200">
-                <div class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Consultation Timing</div>
-                <div class="text-sm text-slate-700"><i class="ph ph-clock mr-1 text-slate-400"></i>${timingHtml}</div>
-            </div>
-            
-            <div class="bg-white p-3 rounded-lg border border-slate-200">
-                <div class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Full Address</div>
-                <div class="text-sm text-slate-700">${addressHtml}</div>
-                ${doc.lat && doc.lon ? `
-                <a href="${mapLink}" target="_blank" class="text-blue-600 text-xs font-semibold mt-2 inline-block hover:underline">
-                    Get Directions &rarr;
-                </a>` : ''}
-            </div>
-        </div>
-        
-        <div class="mt-6 flex flex-col gap-3">
-            ${doc.phone ? `
-            <a href="tel:${doc.phone}" class="w-full bg-green-600 text-white py-4 rounded-xl font-bold hover:bg-green-700 transition flex items-center justify-center gap-2 shadow-md text-lg">
-                <i class="ph-fill ph-phone text-2xl"></i> Call Doctor
-            </a>` : `
-            <button disabled class="w-full bg-slate-200 text-slate-400 py-4 rounded-xl font-bold flex items-center justify-center gap-2 cursor-not-allowed text-lg">
-                <i class="ph-fill ph-phone-slash text-2xl"></i> No Phone
-            </button>`}
-            
-            <button onclick="openEditModal(${doc.id})" class="w-full bg-blue-50 text-blue-700 border border-blue-200 py-2.5 rounded-xl font-bold hover:bg-blue-100 transition flex items-center justify-center gap-2 shadow-sm text-sm">
-                <i class="ph-fill ph-pencil-simple text-lg"></i> Edit Info
-            </button>
         </div>
     `;
 
+    // Fly map to marker and blink
     const marker = markersMap.get(id);
     if (marker) {
-        // Remove blink from previous
         if (activeDoctorId && markersMap.has(activeDoctorId)) {
-            const prevMarker = markersMap.get(activeDoctorId);
-            L.DomUtil.removeClass(prevMarker.getElement(), 'marker-blinking');
+            const prev = markersMap.get(activeDoctorId);
+            if (prev.getElement()) L.DomUtil.removeClass(prev.getElement(), 'marker-blinking');
         }
-
         activeDoctorId = id;
-
-        // Fly To
         map.flyTo(marker.getLatLng(), 16, { animate: true, duration: 1 });
-        
-        // Blink animation
         setTimeout(() => {
-            if (marker.getElement()) {
-                L.DomUtil.addClass(marker.getElement(), 'marker-blinking');
-            }
-            marker.openTooltip();
+            if (marker.getElement()) L.DomUtil.addClass(marker.getElement(), 'marker-blinking');
         }, 1000);
-    } else {
-        alert("This doctor does not have a mapped location yet.");
     }
 }
 
-function highlightDoctorInList(id) {
-    document.querySelectorAll('.doctor-card').forEach(c => c.classList.remove('active'));
-    const card = document.getElementById(`doc-card-${id}`);
-    if (card) {
-        card.classList.add('active');
-        card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+// ── Back to List ──────────────────────────────────────────────────────────────
+function backToList() {
+    document.getElementById('detail-card').classList.add('hidden');
+    document.getElementById('detail-card').classList.remove('flex');
+    document.getElementById('doctorList').classList.remove('hidden');
+
+    if (activeDoctorId && markersMap.has(activeDoctorId)) {
+        const m = markersMap.get(activeDoctorId);
+        if (m.getElement()) L.DomUtil.removeClass(m.getElement(), 'marker-blinking');
     }
+    activeDoctorId = null;
+    setSheetState('half');
 }
 
-// --- Edit Modal Logic ---
-const modal = document.getElementById('editModal');
-const modalContent = document.getElementById('editModalContent');
+// ── Bottom Sheet (3 snap points) ──────────────────────────────────────────────
+let setSheetState;
+function setupBottomSheet() {
+    const sheet      = document.getElementById('bottomSheet');
+    const handle     = document.getElementById('dragHandle');
+    const sheetH     = () => sheet.offsetHeight;
 
+    // SNAP POSITIONS (translateY values, sheet height = 92vh)
+    // peek = only handle visible (92vh - 56px)
+    // half = half screen
+    // full = fully open (10% from top)
+    const snapY = () => ({
+        peek: sheetH() - 56,
+        half: window.innerHeight * 0.5,
+        full: window.innerHeight * 0.08,
+    });
+
+    setSheetState = function(state) {
+        const y = snapY();
+        const val = state === 'full' ? y.full : state === 'half' ? y.half : y.peek;
+        sheet.style.transition = 'transform 0.32s cubic-bezier(0.25, 0.8, 0.25, 1)';
+        sheet.style.transform  = `translateY(${val}px)`;
+        sheet._state = state;
+    };
+
+    let startY, startTranslate, dragging = false;
+
+    handle.addEventListener('touchstart', e => {
+        startY = e.touches[0].clientY;
+        const m = (sheet.style.transform || '').match(/translateY\((.+)px\)/);
+        startTranslate = m ? parseFloat(m[1]) : snapY().peek;
+        dragging = true;
+        sheet.style.transition = 'none';
+    }, { passive: true });
+
+    handle.addEventListener('touchmove', e => {
+        if (!dragging) return;
+        const delta = e.touches[0].clientY - startY;
+        let newY = startTranslate + delta;
+        const { full, peek } = snapY();
+        newY = Math.max(full, Math.min(peek, newY));
+        sheet.style.transform = `translateY(${newY}px)`;
+    }, { passive: true });
+
+    handle.addEventListener('touchend', e => {
+        if (!dragging) return;
+        dragging = false;
+        const m = (sheet.style.transform || '').match(/translateY\((.+)px\)/);
+        const curY = m ? parseFloat(m[1]) : snapY().half;
+        const { peek, half, full } = snapY();
+        if      (curY < (full  + half) / 2)  setSheetState('full');
+        else if (curY < (half  + peek) / 2)  setSheetState('half');
+        else                                   setSheetState('peek');
+    });
+
+    window.addEventListener('resize', () => setSheetState(sheet._state || 'half'));
+    setSheetState('half');
+}
+
+// ── Event Listeners ───────────────────────────────────────────────────────────
+function setupEventListeners() {
+    document.getElementById('backToListBtn').onclick = backToList;
+
+    // Search
+    document.getElementById('searchInput').addEventListener('input', e => {
+        const q = e.target.value.toLowerCase().trim();
+        let list = getFilteredDoctors();
+        if (q) list = list.filter(d =>
+            (d.name || '').toLowerCase().includes(q) ||
+            (d.hospitals_practice || '').toLowerCase().includes(q) ||
+            (d.clinic_name || '').toLowerCase().includes(q) ||
+            (d.specialization || '').toLowerCase().includes(q) ||
+            (d.phone || '').includes(q)
+        );
+        renderDoctors(list);
+    });
+
+    // Spec filters
+    document.querySelectorAll('.spec-filter').forEach(btn => {
+        btn.onclick = () => setSpecFilter(btn.dataset.spec);
+    });
+
+    // Near Me FAB
+    document.getElementById('nearMeBtn').onclick = findNearMe;
+
+    // Edit Modal
+    document.getElementById('closeModalBtn').onclick  = closeEditModal;
+    document.getElementById('cancelEditBtn').onclick  = closeEditModal;
+    document.getElementById('saveEditBtn').onclick    = saveEdit;
+}
+
+// ── Near Me ───────────────────────────────────────────────────────────────────
+function findNearMe() {
+    if (!navigator.geolocation) { alert('Geolocation not supported.'); return; }
+    const btn = document.getElementById('nearMeBtn');
+    btn.innerHTML = '<i class="ph-fill ph-spinner-gap animate-spin text-2xl"></i>';
+    navigator.geolocation.getCurrentPosition(pos => {
+        const { latitude: uLat, longitude: uLon } = pos.coords;
+        const withDist = doctorsData
+            .filter(d => d.lat && d.lon)
+            .map(d => ({ ...d, _dist: haversine(uLat, uLon, d.lat, d.lon) }))
+            .sort((a, b) => a._dist - b._dist)
+            .slice(0, 10);
+
+        renderDoctors(withDist);
+        L.circleMarker([uLat, uLon], { radius: 8, fillColor: '#3b82f6', color: '#fff', weight: 2, fillOpacity: 0.9 })
+         .addTo(map).bindPopup('You are here').openPopup();
+        map.setView([uLat, uLon], 13);
+        btn.innerHTML = '<i class="ph-fill ph-navigation-arrow text-2xl"></i>';
+        document.querySelectorAll('.zone-filter').forEach(b => b.classList.remove('active'));
+    }, () => {
+        alert('Unable to get location.');
+        btn.innerHTML = '<i class="ph-fill ph-navigation-arrow text-2xl"></i>';
+    });
+}
+
+function haversine(lat1, lon1, lat2, lon2) {
+    const R = 6371, toR = Math.PI / 180;
+    const dLat = (lat2 - lat1) * toR, dLon = (lon2 - lon1) * toR;
+    const a = Math.sin(dLat/2)**2 + Math.cos(lat1*toR)*Math.cos(lat2*toR)*Math.sin(dLon/2)**2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+// ── Edit Modal ────────────────────────────────────────────────────────────────
 function openEditModal(id) {
     const doc = doctorsData.find(d => d.id === id);
     if (!doc) return;
-
-    document.getElementById('editDocId').value = doc.id;
-    document.getElementById('editPhone').value = doc.phone || '';
-    document.getElementById('editTiming').value = doc.consultation_timing || '';
-    document.getElementById('editNotes').value = doc.rep_notes || '';
-
+    document.getElementById('editDocId').value   = doc.id;
+    document.getElementById('editPhone').value   = doc.phone || '';
+    document.getElementById('editTiming').value  = doc.consultation_timing || '';
+    document.getElementById('editNotes').value   = doc.rep_notes || '';
+    const modal = document.getElementById('editModal');
     modal.classList.remove('hidden');
     modal.classList.add('flex');
-    setTimeout(() => {
-        modal.classList.add('modal-enter');
-        modalContent.classList.add('modal-content-enter');
-    }, 10);
 }
 
 function closeEditModal() {
-    modal.classList.remove('modal-enter');
-    modalContent.classList.remove('modal-content-enter');
-    setTimeout(() => {
-        modal.classList.add('hidden');
-        modal.classList.remove('flex');
-    }, 200);
+    const modal = document.getElementById('editModal');
+    modal.classList.add('hidden');
+    modal.classList.remove('flex');
 }
 
 async function saveEdit() {
-    const id = document.getElementById('editDocId').value;
-    const phone = document.getElementById('editPhone').value;
+    const id     = document.getElementById('editDocId').value;
+    const phone  = document.getElementById('editPhone').value;
     const timing = document.getElementById('editTiming').value;
-    const notes = document.getElementById('editNotes').value;
-    const btnText = document.getElementById('saveText');
+    const notes  = document.getElementById('editNotes').value;
+    const btn    = document.getElementById('saveText');
+    btn.textContent = 'Saving…';
 
-    btnText.textContent = 'Saving...';
-    
-    const { error } = await db
-        .from('doctors')
-        .update({ phone: phone, consultation_timing: timing, rep_notes: notes })
+    const { error } = await db.from('doctors')
+        .update({ phone, consultation_timing: timing, rep_notes: notes })
         .eq('id', id);
 
     if (error) {
-        alert('Error saving: ' + error.message);
-        btnText.textContent = 'Save Changes';
-    } else {
-        // Update local data
-        const idx = doctorsData.findIndex(d => d.id == id);
-        if (idx !== -1) {
-            doctorsData[idx].phone = phone;
-            doctorsData[idx].consultation_timing = timing;
-            doctorsData[idx].rep_notes = notes;
-        }
-        
-        btnText.textContent = 'Saved!';
-        setTimeout(() => {
-            closeEditModal();
-            btnText.textContent = 'Save Changes';
-            // Re-render currently visible docs
-            const activeZone = document.querySelector('.zone-filter.active').dataset.zone;
-            filterByZone(activeZone);
-        }, 1000);
-    }
-}
-
-function setupEventListeners() {
-    document.getElementById('closeModalBtn').onclick = closeEditModal;
-    document.getElementById('cancelEditBtn').onclick = closeEditModal;
-    document.getElementById('saveEditBtn').onclick = saveEdit;
-    
-    document.getElementById('searchInput').addEventListener('input', (e) => {
-        const query = e.target.value.toLowerCase();
-        const activeZone = document.querySelector('.zone-filter.active').dataset.zone;
-        
-        let filtered = doctorsData;
-        if (activeZone !== 'all') {
-            filtered = filtered.filter(d => d.zone_id == activeZone);
-        }
-        
-        if (query) {
-            filtered = filtered.filter(d => 
-                (d.name && d.name.toLowerCase().includes(query)) ||
-                (d.hospitals_practice && d.hospitals_practice.toLowerCase().includes(query)) ||
-                (d.specialization && d.specialization.toLowerCase().includes(query)) ||
-                (d.phone && d.phone.includes(query))
-            );
-        }
-        renderDoctors(filtered);
-    });
-
-    document.getElementById('nearMeBtn').onclick = findNearMe;
-
-    document.getElementById('backToListBtn').addEventListener('click', () => {
-        document.getElementById('detail-card').classList.add('hidden');
-        document.getElementById('detail-card').classList.remove('flex');
-        document.getElementById('doctorList').classList.remove('hidden');
-        
-        if (activeDoctorId && markersMap.has(activeDoctorId)) {
-            const prevMarker = markersMap.get(activeDoctorId);
-            if (prevMarker.getElement()) {
-                L.DomUtil.removeClass(prevMarker.getElement(), 'marker-blinking');
-            }
-            prevMarker.closeTooltip();
-        }
-        activeDoctorId = null;
-        
-        // Snap back to full list on mobile
-        if (typeof setSheetState === 'function') setSheetState('full');
-    });
-
-    setupBottomSheet();
-}
-
-// --- Bottom Sheet Logic ---
-let setSheetState;
-function setupBottomSheet() {
-    const bottomSheet = document.getElementById('bottomSheet');
-    const dragHandle = document.getElementById('dragHandle');
-    let startY = 0;
-    let currentY = 0;
-    let isDragging = false;
-    let currentState = 'hidden';
-
-    setSheetState = function(state) {
-        currentState = state;
-        bottomSheet.style.transition = 'transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1)';
-        if (window.innerWidth >= 768) {
-            bottomSheet.style.transform = `translateY(0)`;
-            return;
-        }
-        if (state === 'hidden') {
-            bottomSheet.style.transform = `translateY(calc(100% - 60px))`;
-        } else if (state === 'partial') {
-            bottomSheet.style.transform = `translateY(50%)`;
-        } else if (state === 'full') {
-            bottomSheet.style.transform = `translateY(10%)`;
-        }
-    };
-
-    if (dragHandle) {
-        dragHandle.addEventListener('touchstart', (e) => {
-            startY = e.touches[0].clientY;
-            const rect = bottomSheet.getBoundingClientRect();
-            currentY = rect.top;
-            isDragging = true;
-            bottomSheet.style.transition = 'none';
-        }, {passive: true});
-
-        dragHandle.addEventListener('touchmove', (e) => {
-            if (!isDragging) return;
-            const deltaY = e.touches[0].clientY - startY;
-            let newY = currentY + deltaY;
-            if (newY < window.innerHeight * 0.1) newY = window.innerHeight * 0.1;
-            if (newY > window.innerHeight - 60) newY = window.innerHeight - 60;
-            bottomSheet.style.transform = `translateY(${newY}px)`;
-        }, {passive: true});
-
-        dragHandle.addEventListener('touchend', (e) => {
-            if (!isDragging) return;
-            isDragging = false;
-            const rect = bottomSheet.getBoundingClientRect();
-            const y = rect.top;
-            const vh = window.innerHeight;
-            
-            if (y < vh * 0.3) {
-                setSheetState('full');
-            } else if (y < vh * 0.75) {
-                setSheetState('partial');
-            } else {
-                setSheetState('hidden');
-            }
-        });
-    }
-
-    window.addEventListener('resize', () => setSheetState(currentState));
-    setSheetState('partial'); // Start in partial state
-}
-
-// --- Near Me (Haversine) ---
-function findNearMe() {
-    if (!navigator.geolocation) {
-        alert("Geolocation is not supported by your browser.");
+        alert('Save failed: ' + error.message);
+        btn.textContent = 'Save Changes';
         return;
     }
-
-    const btn = document.getElementById('nearMeBtn');
-    btn.innerHTML = '<i class="ph-fill ph-spinner-gap animate-spin text-2xl"></i>';
-
-    navigator.geolocation.getCurrentPosition(
-        (position) => {
-            const userLat = position.coords.latitude;
-            const userLon = position.coords.longitude;
-
-            // Sort doctors by distance
-            const withDist = doctorsData.filter(d => d.lat && d.lon).map(doc => {
-                const dist = haversineDistance(userLat, userLon, doc.lat, doc.lon);
-                return { ...doc, distance: dist };
-            });
-
-            withDist.sort((a, b) => a.distance - b.distance);
-            const nearest10 = withDist.slice(0, 10);
-
-            // Add distance to names temporarily for display
-            nearest10.forEach(d => {
-                d.specialization = `${(d.distance).toFixed(1)} km away • ${d.specialization}`;
-            });
-
-            renderDoctors(nearest10);
-            
-            // Plot user location
-            L.circleMarker([userLat, userLon], {
-                radius: 8,
-                fillColor: "#3b82f6",
-                color: "#fff",
-                weight: 2,
-                opacity: 1,
-                fillOpacity: 0.8
-            }).addTo(map).bindPopup("You are here").openPopup();
-
-            map.setView([userLat, userLon], 13);
-            
-            btn.innerHTML = '<i class="ph-fill ph-navigation-arrow text-2xl"></i>';
-            document.querySelectorAll('.zone-filter').forEach(b => b.classList.remove('active'));
-        },
-        (error) => {
-            alert("Unable to retrieve your location.");
-            btn.innerHTML = '<i class="ph-fill ph-navigation-arrow text-2xl"></i>';
-        }
-    );
+    const idx = doctorsData.findIndex(d => d.id == id);
+    if (idx !== -1) { doctorsData[idx].phone = phone; doctorsData[idx].consultation_timing = timing; doctorsData[idx].rep_notes = notes; }
+    btn.textContent = 'Saved!';
+    setTimeout(() => { closeEditModal(); btn.textContent = 'Save Changes'; }, 900);
 }
 
-function haversineDistance(lat1, lon1, lat2, lon2) {
-    const R = 6371; // km
-    const dLat = (lat2 - lat1) * Math.PI / 180;
-    const dLon = (lon2 - lon1) * Math.PI / 180;
-    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-              Math.sin(dLon/2) * Math.sin(dLon/2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-    return R * c;
-}
-
-// --- Realtime Sync ---
+// ── Realtime Sync ─────────────────────────────────────────────────────────────
 function setupRealtime() {
-    db
-      .channel('schema-db-changes')
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'doctors' },
-        (payload) => {
-            const updatedDoc = payload.new;
-            const idx = doctorsData.findIndex(d => d.id === updatedDoc.id);
-            if (idx !== -1) {
-                // Update local memory silently
-                doctorsData[idx] = updatedDoc;
-                
-                // If the card is currently rendered, update it visually
-                const card = document.getElementById(`doc-card-${updatedDoc.id}`);
-                if (card) {
-                    const activeZone = document.querySelector('.zone-filter.active')?.dataset.zone || 'all';
-                    // Re-render to reflect changes if it's not obtrusive, or just update the DOM node
-                    // For simplicity, we just trigger a search input event to re-render current view
-                    document.getElementById('searchInput').dispatchEvent(new Event('input'));
-                }
-            }
-        }
-      )
-      .subscribe();
+    db.channel('schema-db-changes')
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'doctors' }, payload => {
+          const idx = doctorsData.findIndex(d => d.id === payload.new.id);
+          if (idx !== -1) doctorsData[idx] = payload.new;
+      }).subscribe();
+}
+
+// ── DB Status Indicator ───────────────────────────────────────────────────────
+function setDbStatus(ok) {
+    document.getElementById('db-dot').className   = `w-2 h-2 rounded-full ${ok ? 'bg-green-500' : 'bg-red-400'}`;
+    document.getElementById('db-label').textContent = ok ? 'Live' : 'Offline';
+}
+
+function showError(msg) {
+    document.getElementById('doctorList').innerHTML = `<div class="text-red-500 text-center p-6 text-sm">${msg}</div>`;
 }

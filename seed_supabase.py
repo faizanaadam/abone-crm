@@ -15,13 +15,42 @@ HEADERS = {
 def clean_val(v):
     if v is None: return None
     if isinstance(v, float) and math.isnan(v): return None
+    if isinstance(v, str) and v.strip() in ('', 'nan', 'None', 'NaN'): return None
     return str(v) if not isinstance(v, (int, float, bool)) else v
+
+def clean_float(v):
+    if v is None: return None
+    if isinstance(v, float) and math.isnan(v): return None
+    try:
+        f = float(v)
+        if math.isnan(f): return None
+        return f
+    except (TypeError, ValueError):
+        return None
+
+# =============================================
+# STEP 0: TRUNCATE doctors TABLE (clean slate)
+# =============================================
+print("Truncating doctors table...")
+# Delete all rows using a filter that matches everything (id != 0 covers all positive ids)
+r = requests.delete(
+    f"{URL}/doctors?id=gte.0",
+    headers={**HEADERS, "Prefer": "return=minimal"}
+)
+# Also delete any rows with null id or negative id just to be safe
+r2 = requests.delete(
+    f"{URL}/doctors?id=lt.0",
+    headers={**HEADERS, "Prefer": "return=minimal"}
+)
+print(f"Truncate status: {r.status_code}")
 
 # Load data
 with open('processed_doctors.json', 'r', encoding='utf-8') as f:
     doctors_data = json.load(f)
 
-# 1. Seed Zones
+# =============================================
+# STEP 1: Seed Zones
+# =============================================
 print("Seeding Zones...")
 ZONES = {
     "1": {"name": "Hebbal / Yelahanka", "lat": 13.044796, "lon": 77.5910972},
@@ -37,45 +66,61 @@ ZONES = {
 }
 
 zone_payload = [{"id": z_id, "name": z_info["name"], "lat": z_info["lat"], "lon": z_info["lon"]} for z_id, z_info in ZONES.items()]
-r = requests.post(f"{URL}/zones", headers=HEADERS, json=zone_payload)
+r = requests.post(f"{URL}/zones", headers={**HEADERS, "Prefer": "resolution=merge-duplicates"}, json=zone_payload)
 if r.status_code not in (200, 201):
-    print(f"Error seeding zones: {r.text}")
+    print(f"  Zones note: {r.text[:200]}")
+else:
+    print(f"  Zones seeded OK.")
 
-# 2. Seed Areas
-print("Seeding Areas...")
-area_payload = []
-for z_id in ZONES.keys():
-    for a_id in range(1, 11):
-        area_id = f"{z_id}_{a_id}"
-        area_payload.append({"id": area_id, "zone_id": z_id, "name": f"Area {a_id}"})
-r = requests.post(f"{URL}/areas", headers=HEADERS, json=area_payload)
-
-# 3. Seed Doctors
-print("Seeding Doctors...")
+# =============================================
+# STEP 2: Seed Doctors (1,244 records)
+# =============================================
+print("Building doctor payload...")
 doc_payload = []
-for row in doctors_data:
-    # Handle area_id to match the zones
-    z_id = clean_val(row.get('zone_id'))
-    a_id_num = clean_val(row.get('area_id'))
-    a_id = f"{z_id}_{int(float(a_id_num))}" if z_id and a_id_num else None
+excluded_count = 0
 
-    # Handle PostGIS point format: 'SRID=4326;POINT(lon lat)'
-    lat = clean_val(row.get('latitude'))
-    lon = clean_val(row.get('longitude'))
+for row in doctors_data:
+    name = clean_val(row.get('Doctor Name'))
+    if not name or name in ('Doctor Name', 'Unknown', 'nan'):
+        continue
+
+    specialization = clean_val(row.get('Specialization')) or ''
+
+    # EXCLUSION LOGIC: Skip "Exclude" specialization from ALL maps and lists
+    if specialization.strip().lower() == 'exclude':
+        excluded_count += 1
+        continue
+
+    z_id = clean_val(row.get('zone_id'))
+
+    lat = clean_float(row.get('latitude'))
+    lon = clean_float(row.get('longitude'))
     location = None
     if lat is not None and lon is not None:
         location = f"SRID=4326;POINT({lon} {lat})"
 
+    # Normalize specialization into our 4 categories for the filter system
+    spec_lower = specialization.lower()
+    if 'spine' in spec_lower and ('trauma' in spec_lower or 'ortho' in spec_lower or 'both' in spec_lower):
+        spec_category = 'Both'
+    elif 'spine' in spec_lower:
+        spec_category = 'Spine'
+    elif 'trauma' in spec_lower:
+        spec_category = 'Trauma'
+    else:
+        spec_category = 'General'
+
     doc = {
         "koa_no": clean_val(row.get('KOA No')),
-        "name": clean_val(row.get('Doctor Name')) or "Unknown",
-        "specialization": clean_val(row.get('Specialization')),
+        "name": name,
+        "specialization": specialization,
+        "spec_category": spec_category,
         "role": clean_val(row.get('Role')),
         "phone": clean_val(row.get('Mobile Number(s)')),
         "email": clean_val(row.get('Email')),
         "hospitals_practice": clean_val(row.get('Hospital(s) / Practice')),
         "hospital_address": clean_val(row.get('Hospital Address')),
-        "hospital_rating": clean_val(row.get('Hospital Rating')),
+        "hospital_rating": clean_float(row.get('Hospital Rating')),
         "hospital_reviews": clean_val(row.get('Hospital Reviews')),
         "hospital_category": clean_val(row.get('Hospital Category')),
         "hospital_website": clean_val(row.get('Hospital Website')),
@@ -87,31 +132,32 @@ for row in doctors_data:
         "approx_surgeries": clean_val(row.get('Approx. Surgeries / Month')),
         "pct_using_abone": clean_val(row.get('% Using Abone')),
         "full_address": None,
-        "ai_confidence": clean_val(row.get('AI Confidence')),
+        "area_name": clean_val(row.get('Area')),
         "original_notes": clean_val(row.get('Notes')),
         "source": clean_val(row.get('Source')),
         "lat": lat,
         "lon": lon,
         "location": location,
         "zone_id": str(z_id) if z_id else None,
-        "area_id": a_id,
         "is_approximate": bool(row.get("is_approximate", False))
     }
-    
-    # Filter out empty records or the header record (where name is "Doctor Name")
-    if doc["name"] == "Doctor Name" or doc["name"] == "Unknown":
-        continue
-        
+
     doc_payload.append(doc)
 
-# Batch insert due to possible limits
+print(f"Total to seed: {len(doc_payload)} doctors (excluded {excluded_count} 'Exclude' records)")
+
+# Batch insert
 batch_size = 100
+seeded = 0
+errors = 0
 for i in range(0, len(doc_payload), batch_size):
     batch = doc_payload[i:i+batch_size]
     r = requests.post(f"{URL}/doctors", headers=HEADERS, json=batch)
     if r.status_code not in (200, 201):
-        print(f"Error seeding doctors batch {i}: {r.text}")
+        print(f"  ERROR batch {i}: {r.text[:300]}")
+        errors += 1
     else:
-        print(f"Seeded batch {i} to {i+len(batch)}")
+        seeded += len(batch)
+        print(f"  Seeded {seeded}/{len(doc_payload)}")
 
-print("Done Seeding!")
+print(f"\n=== Done! Seeded {seeded} doctors. Errors: {errors}. Excluded: {excluded_count} ===")
