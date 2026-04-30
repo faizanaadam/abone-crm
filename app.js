@@ -21,9 +21,27 @@ document.addEventListener('DOMContentLoaded', async () => {
     initMap();
     setupBottomSheet();
     setupEventListeners();
-    await fetchZones();
-    await fetchDoctors();
-    setupRealtime();
+    
+    // Zone Isolation: Fetch and draw zones first, independently.
+    try {
+        await fetchZones();
+    } catch (e) {
+        console.error("Error fetching zones:", e);
+    }
+    
+    try {
+        await fetchDoctors();
+    } catch (e) {
+        console.error("Error fetching doctors:", e);
+        showError('Failed to load directory.');
+    }
+    
+    try {
+        setupRealtime();
+    } catch(e) {
+        console.warn("Realtime setup failed (expected on file:// origins):", e);
+    }
+    
     setDbStatus(true);
 });
 
@@ -56,22 +74,53 @@ async function fetchDoctors() {
     let from = 0;
     const pageSize = 1000;
     while (true) {
-        const { data, error } = await db.from('doctors').select('*').range(from, from + pageSize - 1);
-        if (error) { console.error(error); showError('Failed to load directory.'); return; }
-        if (!data || data.length === 0) break;
-        allData = allData.concat(data);
-        if (data.length < pageSize) break;  // last page
-        from += pageSize;
+        try {
+            const { data, error } = await db.from('doctors').select('*, locations(*)').range(from, from + pageSize - 1);
+            if (error) { 
+                console.error("Supabase fetch error:", error); 
+                showError('Failed to load directory. See console for details.'); 
+                return; 
+            }
+            
+            console.log(`Fetched doctors ${from} to ${from + pageSize - 1}:`, data);
+            
+            if (!data || data.length === 0) break;
+            allData = allData.concat(data);
+            if (data.length < pageSize) break;  // last page
+            from += pageSize;
+        } catch (err) {
+            console.error("Network/JS error in fetchDoctors:", err);
+            showError('Network error while loading directory.');
+            return;
+        }
     }
+
+    // Deduplicate doctors by name to fix flat excel inserts
+    const mapObj = new Map();
+    allData.forEach(d => {
+        if (!d || !d.name) return;
+        const key = d.name.trim().toLowerCase();
+        if (!mapObj.has(key)) {
+            d.locations = d.locations || [];
+            mapObj.set(key, d);
+        } else {
+            const existing = mapObj.get(key);
+            if (d.locations && d.locations.length > 0) {
+                existing.locations.push(...d.locations);
+            }
+        }
+    });
+    const uniqueData = Array.from(mapObj.values());
+
     // Filter out "Exclude" specialization entirely
-    doctorsData = allData.filter(d => (d.specialization || '').trim().toLowerCase() !== 'exclude');
+    doctorsData = uniqueData.filter(d => (d.specialization || '').trim().toLowerCase() !== 'exclude');
     renderDoctors(getFilteredDoctors());
 }
 
 // ── Filtering helpers ─────────────────────────────────────────────────────────
 function getFilteredDoctors() {
     let list = doctorsData;
-    if (activeZone !== 'all') list = list.filter(d => d.zone_id == activeZone);
+    if (activeZone !== 'all') list = list.filter(d => d.locations && d.locations.some(l => l.zone_id == activeZone));
     if (activeSpec !== 'all') list = list.filter(d => (d.spec_category || 'General') === activeSpec);
     return list;
 }
@@ -148,18 +197,20 @@ function getSpecClass(doc) {
 
 // ── Navigation URL (3-tier priority) ─────────────────────────────────────────
 function getNavUrl(doc) {
+    const primaryLoc = doc.locations && doc.locations.find(l => l.is_primary) || (doc.locations && doc.locations[0]);
+    if (!primaryLoc) return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(doc.name)}+Bangalore`;
+    
     // Priority 1: explicit Google Maps link
-    if (doc.hospital_maps_link && doc.hospital_maps_link.startsWith('http')) {
-        return doc.hospital_maps_link;
+    if (primaryLoc.map_link && primaryLoc.map_link.startsWith('http')) {
+        return primaryLoc.map_link;
     }
     // Priority 2: precise coordinates (Blue Pin)
-    if (!doc.is_approximate && doc.lat && doc.lon) {
-        return `https://www.google.com/maps/search/?api=1&query=${doc.lat},${doc.lon}`;
+    if (!doc.is_approximate && primaryLoc.lat && primaryLoc.lon) {
+        return `https://www.google.com/maps/search/?api=1&query=${primaryLoc.lat},${primaryLoc.lon}`;
     }
     // Priority 3: approximate (Grey Circle) — search by name + area
-    const clinicPart = encodeURIComponent((doc.clinic_name || doc.hospitals_practice || doc.name || '').trim());
-    const areaPart   = encodeURIComponent((doc.area_name || '').trim());
-    return `https://www.google.com/maps/search/?api=1&query=${clinicPart}+${areaPart}+Bangalore`;
+    const clinicPart = encodeURIComponent((primaryLoc.hospital_name || doc.name || '').trim());
+    return `https://www.google.com/maps/search/?api=1&query=${clinicPart}+Bangalore`;
 }
 
 // ── Render Doctors ────────────────────────────────────────────────────────────
@@ -178,73 +229,120 @@ function renderDoctors(docs) {
 
     const frag = document.createDocumentFragment();
 
-    docs.forEach(doc => {
-        // Bounding box guard
-        if (doc.lat && doc.lon) {
-            if (doc.lat < 12.7 || doc.lat > 13.25 || doc.lon < 77.3 || doc.lon > 77.85) return;
-        }
+    // If "All Zones" is active, we group the list by zone for better organization
+    if (activeZone === 'all' && activeSpec === 'all' && !document.getElementById('searchInput').value) {
+        const grouped = {};
+        docs.forEach(doc => {
+            const primaryLoc = doc.locations && (doc.locations.find(l => l.is_primary) || doc.locations[0]);
+            const zId = primaryLoc ? primaryLoc.zone_id : 'unknown';
+            if (!grouped[zId]) grouped[zId] = [];
+            grouped[zId].push(doc);
+        });
 
-        // ── Map Marker ───────────────────────────────────────────────────────
-        if (doc.lat && doc.lon) {
-            const specClass = getSpecClass(doc);
-            const icon = L.divIcon({
-                className: `custom-marker ${specClass}`,
-                iconSize: [30, 42],
-                iconAnchor: [15, 42],
-                html: `<div class="marker-pin"></div>`
+        Object.keys(grouped).sort((a, b) => (parseInt(a) || 99) - (parseInt(b) || 99)).forEach(zId => {
+            const zone = zonesData.find(z => z.id == zId);
+            const zoneName = zone ? zone.name : 'Unassigned / Other';
+            
+            const header = document.createElement('div');
+            header.className = 'px-5 py-3 bg-slate-50 border-y border-slate-100 text-[10px] font-bold text-slate-400 uppercase tracking-widest sticky top-0 z-10';
+            header.textContent = zoneName;
+            frag.appendChild(header);
+
+            grouped[zId].forEach(doc => {
+                frag.appendChild(createDoctorCard(doc));
+                addMarker(doc);
             });
-            const marker = L.marker([doc.lat, doc.lon], { icon });
-
-            // Bind a popup with the doctor's name for easy identification
-            marker.bindPopup(`<span class="font-bold text-sm">${doc.name}</span>`);
-
-            // Immediate navigation on marker click
-            marker.on('click', () => window.open(getNavUrl(doc), '_blank'));
-
-            markerCluster.addLayer(marker);
-            markersMap.set(doc.id, marker);
-        }
-
-        // ── Sidebar Card ─────────────────────────────────────────────────────
-        const card = document.createElement('div');
-        card.id = `doc-card-${doc.id}`;
-        card.className = 'doctor-card bg-white border border-slate-100 mx-3 my-1.5 rounded-2xl p-4 cursor-pointer shadow-sm';
-
-        const specBadge = doc.spec_category || 'General';
-        const badgeColor = { Spine: 'bg-green-100 text-green-700', Trauma: 'bg-orange-100 text-orange-700',
-                             Both: 'bg-yellow-100 text-yellow-700', General: 'bg-blue-100 text-blue-700' }[specBadge] || 'bg-slate-100 text-slate-600';
-
-        card.innerHTML = `
-            <div class="flex justify-between items-start gap-2">
-                <div class="min-w-0">
-                    <h3 class="font-bold text-slate-800 text-sm leading-tight truncate">${doc.name}</h3>
-                    <p class="text-xs text-slate-500 truncate mt-0.5">${doc.hospitals_practice || doc.clinic_name || '—'}</p>
-                </div>
-                <span class="flex-shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full ${badgeColor}">${specBadge}</span>
-            </div>
-            ${doc.phone ? `
-            <div class="mt-2.5 flex gap-2">
-                <a href="tel:${doc.phone}" onclick="event.stopPropagation()"
-                   class="flex-1 bg-green-600 text-white text-xs py-2 rounded-xl font-semibold flex items-center justify-center gap-1 active:scale-95 transition-transform">
-                    <i class="ph-fill ph-phone"></i> Call
-                </a>
-                <button onclick="event.stopPropagation(); showDetail(${doc.id})"
-                   class="flex-1 bg-slate-100 text-slate-700 text-xs py-2 rounded-xl font-semibold flex items-center justify-center gap-1 active:scale-95 transition-transform">
-                    <i class="ph ph-info"></i> Details
-                </button>
-            </div>` : `
-            <div class="mt-2.5">
-                <button onclick="event.stopPropagation(); showDetail(${doc.id})"
-                   class="w-full bg-slate-100 text-slate-700 text-xs py-2 rounded-xl font-semibold flex items-center justify-center gap-1 active:scale-95 transition-transform">
-                    <i class="ph ph-info"></i> View Details
-                </button>
-            </div>`}
-        `;
-        card.onclick = () => showDetail(doc.id);
-        frag.appendChild(card);
-    });
+        });
+    } else {
+        docs.forEach(doc => {
+            frag.appendChild(createDoctorCard(doc));
+            addMarker(doc);
+        });
+    }
 
     list.appendChild(frag);
+}
+
+function addMarker(doc) {
+    let lat = null;
+    let lon = null;
+    let primaryLoc = null;
+
+    if (doc.locations && doc.locations.length > 0) {
+        primaryLoc = doc.locations.find(l => l.is_primary) || doc.locations[0];
+        if (primaryLoc) {
+            lat = parseFloat(primaryLoc.lat);
+            lon = parseFloat(primaryLoc.lon);
+        }
+    }
+
+    if (isNaN(lat)) lat = null;
+    if (isNaN(lon)) lon = null;
+
+    if (lat !== null && lon !== null) {
+        if (lat < 12.7 || lat > 13.25 || lon < 77.3 || lon > 77.85) {
+            lat = null;
+            lon = null;
+        }
+    }
+
+    if (lat !== null && lon !== null) {
+        const specClass = getSpecClass(doc);
+        const icon = L.divIcon({
+            className: `custom-marker ${specClass}`,
+            iconSize: [30, 42],
+            iconAnchor: [15, 42],
+            html: `<div class="marker-pin"></div>`
+        });
+        const marker = L.marker([lat, lon], { icon });
+        marker.bindTooltip(`<b>${doc.name}</b>`);
+        marker.on('click', () => showDetail(doc.id));
+        markerCluster.addLayer(marker);
+        markersMap.set(doc.id, marker);
+    }
+}
+
+function createDoctorCard(doc) {
+    const primaryLoc = doc.locations && (doc.locations.find(l => l.is_primary) || doc.locations[0]);
+    const zone = zonesData.find(z => z.id == (primaryLoc ? primaryLoc.zone_id : null));
+    const zoneBadge = zone ? `<span class="ml-auto text-[9px] font-bold bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded uppercase tracking-tighter">${zone.name.split(' / ')[0]}</span>` : '';
+
+    const card = document.createElement('div');
+    card.className = 'doctor-card p-4 border-b border-slate-50 cursor-pointer hover:bg-slate-50 transition-colors';
+    card.dataset.id = doc.id;
+    card.innerHTML = `
+        <div class="flex justify-between items-start mb-1">
+            <h3 class="text-sm font-bold text-slate-800">${doc.name}</h3>
+            ${zoneBadge}
+        </div>
+        <div class="flex items-center gap-1.5 text-xs text-slate-500">
+            <i class="ph ph-stethoscope"></i>
+            <span>${doc.specialization || 'Orthopedic Surgeon'}</span>
+        </div>
+        ${primaryLoc ? `
+        <div class="mt-2 flex items-center gap-1.5 text-[11px] text-slate-600 font-medium">
+            <i class="ph ph-hospital text-blue-500"></i>
+            <span class="truncate">${primaryLoc.hospital_name}</span>
+        </div>` : ''}
+        
+        <div class="mt-3 flex gap-2">
+            ${doc.phone ? `
+            <a href="tel:${doc.phone}" onclick="event.stopPropagation()"
+               class="flex-1 bg-green-50 text-green-700 text-xs py-2 rounded-xl font-semibold flex items-center justify-center gap-1 active:scale-95 transition-transform">
+                <i class="ph ph-phone"></i> Call
+            </a>
+            <button onclick="event.stopPropagation(); showDetail('${doc.id}')"
+               class="flex-1 bg-slate-100 text-slate-700 text-xs py-2 rounded-xl font-semibold flex items-center justify-center gap-1 active:scale-95 transition-transform">
+                <i class="ph ph-info"></i> Details
+            </button>` : `
+            <button onclick="event.stopPropagation(); showDetail('${doc.id}')"
+               class="w-full bg-slate-100 text-slate-700 text-xs py-2 rounded-xl font-semibold flex items-center justify-center gap-1 active:scale-95 transition-transform">
+                <i class="ph ph-info"></i> View Details
+            </button>`}
+        </div>
+    `;
+    card.onclick = () => showDetail(doc.id);
+    return card;
 }
 
 // ── Detail View ───────────────────────────────────────────────────────────────
@@ -260,21 +358,6 @@ function showDetail(id) {
 
     if (isMobile()) setSheetState('half');
 
-    // Build detail HTML
-    const rating  = parseFloat(doc.hospital_rating) || 0;
-    const reviews = doc.hospital_reviews ? `(${doc.hospital_reviews})` : '';
-    let starsHtml = '';
-    if (rating > 0) {
-        for (let i = 1; i <= 5; i++) {
-            if (i <= rating)        starsHtml += '<i class="ph-fill ph-star text-yellow-400 text-sm"></i>';
-            else if (i-0.5 <= rating) starsHtml += '<i class="ph-fill ph-star-half text-yellow-400 text-sm"></i>';
-            else                    starsHtml += '<i class="ph ph-star text-slate-300 text-sm"></i>';
-        }
-        starsHtml += `<span class="text-xs text-slate-500 ml-1">${rating} ${reviews}</span>`;
-    } else {
-        starsHtml = '<span class="text-xs text-slate-400">No ratings</span>';
-    }
-
     const approxWarning = doc.is_approximate ? `
         <div class="flex items-start gap-2 bg-orange-50 border border-orange-200 rounded-xl p-3 mb-4">
             <span class="text-lg">📍</span>
@@ -287,28 +370,61 @@ function showDetail(id) {
         <div class="p-5 pb-2">
             ${approxWarning}
             <h2 class="text-xl font-bold text-slate-800 leading-tight">${doc.name}</h2>
-            <p class="text-sm text-slate-500 mt-1 mb-4">${doc.specialization || 'General Ortho'}</p>
+            <p class="text-sm text-slate-500 mt-1 mb-3">${doc.specialization || 'General Ortho'}</p>
+            
+            ${doc.abone_usage_percentage ? `
+            <div class="flex items-center gap-2 bg-blue-50 border border-blue-100 rounded-lg p-2.5 mb-4">
+                <i class="ph-fill ph-chart-pie-slice text-blue-500 text-lg"></i>
+                <span class="text-xs font-bold text-blue-800">Abone Usage: <span class="text-sm">${doc.abone_usage_percentage}%</span></span>
+            </div>` : ''}
 
             <div class="space-y-3">
-                <div class="bg-slate-50 rounded-xl p-3.5 border border-slate-100">
-                    <div class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Clinic / Hospital</div>
-                    <div class="text-sm font-medium text-slate-700">${doc.clinic_name || doc.hospitals_practice || '—'}</div>
-                    <div class="flex items-center mt-1.5">${starsHtml}</div>
-                </div>
+                ${(doc.locations && doc.locations.length > 0) ? doc.locations.map((loc, idx) => {
+                    const locNavUrl = (loc.map_link && loc.map_link.startsWith('http')) ? loc.map_link : 
+                        (loc.lat && loc.lon ? `https://www.google.com/maps/search/?api=1&query=${loc.lat},${loc.lon}` : 
+                        `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(loc.hospital_name)}+Bangalore`);
+                    
+                    const zone = zonesData.find(z => z.id == loc.zone_id);
+                    const zoneName = zone ? zone.name : null;
+                    
+                    // Build location stars HTML
+                    const locRating  = parseFloat(loc.hospital_rating) || 0;
+                    let locStarsHtml = '';
+                    if (locRating > 0) {
+                        for (let i = 1; i <= 5; i++) {
+                            if (i <= locRating) locStarsHtml += '<i class="ph-fill ph-star text-yellow-400 text-[10px]"></i>';
+                            else if (i-0.5 <= locRating) locStarsHtml += '<i class="ph-fill ph-star-half text-yellow-400 text-[10px]"></i>';
+                            else locStarsHtml += '<i class="ph ph-star text-slate-300 text-[10px]"></i>';
+                        }
+                    }
 
-                <div class="bg-slate-50 rounded-xl p-3.5 border border-slate-100">
-                    <div class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Consultation Timing</div>
-                    <div class="text-sm text-slate-700">${doc.consultation_timing || 'Not available'}</div>
-                </div>
-
-                <div class="bg-slate-50 rounded-xl p-3.5 border border-slate-100">
-                    <div class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Address</div>
-                    <div class="text-sm text-slate-700">${doc.hospital_address || doc.clinic_location || 'Not available'}</div>
-                    <a href="${navUrl}" target="_blank"
-                       class="mt-2 inline-flex items-center gap-1 text-xs font-bold text-blue-600 hover:underline">
-                        <i class="ph ph-navigation-arrow"></i> Open in Google Maps
-                    </a>
-                </div>
+                    return `
+                    <div class="bg-slate-50 rounded-xl p-3.5 border border-slate-100 ${idx > 0 ? 'mt-3' : ''}">
+                        <div class="flex justify-between items-start mb-1.5">
+                            <div class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                                ${loc.is_primary ? '⭐ Primary Clinic / Hospital' : 'Clinic / Hospital'}
+                            </div>
+                            <div class="flex gap-1">
+                                ${zoneName ? `<span class="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">${zoneName}</span>` : ''}
+                                ${loc.category ? `<span class="text-[10px] font-bold text-slate-500 bg-slate-200 px-2 py-0.5 rounded-full">${loc.category}</span>` : ''}
+                            </div>
+                        </div>
+                        <div class="text-sm font-medium text-slate-700">${loc.hospital_name || '—'}</div>
+                        ${locStarsHtml ? `<div class="mt-0.5 flex items-center">${locStarsHtml} <span class="text-[10px] text-slate-500 ml-1">${locRating}</span></div>` : ''}
+                        
+                        <div class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-2 mb-1">Consultation Timing</div>
+                        <div class="text-sm text-slate-700">${loc.consultation_timing || 'Not available'}</div>
+                        
+                        <div class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-2 mb-1.5">Address</div>
+                        <div class="text-sm text-slate-700">${loc.hospital_address || 'Not available'}</div>
+                        
+                        <a href="${locNavUrl}" target="_blank"
+                           class="mt-2 inline-flex items-center gap-1 text-xs font-bold text-blue-600 hover:underline">
+                            <i class="ph ph-navigation-arrow"></i> Open in Google Maps
+                        </a>
+                    </div>
+                    `;
+                }).join('') : '<div class="text-sm text-slate-500 p-3">No locations listed.</div>'}
 
                 ${doc.phone ? `
                 <a href="tel:${doc.phone}"
@@ -327,16 +443,23 @@ function showDetail(id) {
         </div>
     `;
 
-    // Fly map to marker, open its name popup, and blink
+    // Fly map to marker, set permanent tooltip, and blink
     const marker = markersMap.get(id);
     if (marker) {
         if (activeDoctorId && markersMap.has(activeDoctorId)) {
             const prev = markersMap.get(activeDoctorId);
             if (prev.getElement()) L.DomUtil.removeClass(prev.getElement(), 'marker-blinking');
+            const prevDoc = doctorsData.find(d => d.id === activeDoctorId);
+            if (prevDoc) {
+                prev.unbindTooltip();
+                prev.bindTooltip(`<b>${prevDoc.name}</b>`);
+            }
         }
         activeDoctorId = id;
         map.flyTo(marker.getLatLng(), 16, { animate: true, duration: 1 });
-        marker.openPopup();
+        marker.unbindTooltip();
+        marker.bindTooltip(`<span class="font-bold whitespace-nowrap">${doc.name}</span>`, { permanent: true, direction: 'top', offset: [0, -40] }).openTooltip();
+        
         setTimeout(() => {
             if (marker.getElement()) L.DomUtil.addClass(marker.getElement(), 'marker-blinking');
         }, 1000);
@@ -352,7 +475,11 @@ function backToList() {
     if (activeDoctorId && markersMap.has(activeDoctorId)) {
         const m = markersMap.get(activeDoctorId);
         if (m.getElement()) L.DomUtil.removeClass(m.getElement(), 'marker-blinking');
-        if (m.closePopup) m.closePopup();
+        const prevDoc = doctorsData.find(d => d.id === activeDoctorId);
+        if (prevDoc) {
+            m.unbindTooltip();
+            m.bindTooltip(`<b>${prevDoc.name}</b>`);
+        }
     }
     activeDoctorId = null;
     if (isMobile()) setSheetState('half');
@@ -470,8 +597,11 @@ function findNearMe() {
     navigator.geolocation.getCurrentPosition(pos => {
         const { latitude: uLat, longitude: uLon } = pos.coords;
         const withDist = doctorsData
-            .filter(d => d.lat && d.lon)
-            .map(d => ({ ...d, _dist: haversine(uLat, uLon, d.lat, d.lon) }))
+            .filter(d => d.locations && d.locations.some(l => l.is_primary && l.lat && l.lon))
+            .map(d => {
+                const primary = d.locations.find(l => l.is_primary);
+                return { ...d, _dist: haversine(uLat, uLon, primary.lat, primary.lon) };
+            })
             .sort((a, b) => a._dist - b._dist)
             .slice(0, 10);
 
@@ -522,7 +652,7 @@ async function saveEdit() {
     btn.textContent = 'Saving…';
 
     const { error } = await db.from('doctors')
-        .update({ phone, consultation_timing: timing, rep_notes: notes })
+        .update({ phone, rep_notes: notes })
         .eq('id', id);
 
     if (error) {
@@ -531,7 +661,7 @@ async function saveEdit() {
         return;
     }
     const idx = doctorsData.findIndex(d => d.id == id);
-    if (idx !== -1) { doctorsData[idx].phone = phone; doctorsData[idx].consultation_timing = timing; doctorsData[idx].rep_notes = notes; }
+    if (idx !== -1) { doctorsData[idx].phone = phone; doctorsData[idx].rep_notes = notes; }
     btn.textContent = 'Saved!';
     setTimeout(() => { closeEditModal(); btn.textContent = 'Save Changes'; }, 900);
 }
