@@ -6,49 +6,149 @@ const db = window.supabase.createClient(supabaseUrl, supabaseKey);
 // ── State ─────────────────────────────────────────────────────────────────────
 let map, markerCluster;
 let doctorsData = [];
-let zonesData   = [];
-let markersMap  = new Map();   // id → leaflet marker
+let zonesData = [];
+let markersMap = new Map();   // id → leaflet marker
 let polygonsMap = new Map();   // zone_id → leaflet polygon
 let activeDoctorId = null;
-let activeZone  = 'all';
-let activeSpec  = 'all';
+let activeZone = 'all';
+let activeSpec = 'all';
+let currentUserProfile = null;
+let pendingEditsData = [];
+let currentEditId = null;
 
-const ZONE_COLORS = ['#ef4444','#f97316','#f59e0b','#84cc16','#22c55e',
-                     '#10b981','#06b6d4','#3b82f6','#6366f1','#a855f7'];
+const ZONE_COLORS = ['#ef4444', '#f97316', '#f59e0b', '#84cc16', '#22c55e',
+    '#10b981', '#06b6d4', '#3b82f6', '#6366f1', '#a855f7'];
 
-// ── Boot ──────────────────────────────────────────────────────────────────────
+// ── Boot & Auth ───────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
+    setupLoginListeners();
+    await checkSession();
+});
+
+async function checkSession() {
+    const { data: { session }, error } = await db.auth.getSession();
+    if (session) {
+        showApp();
+    } else {
+        showLogin();
+    }
+}
+
+function showLogin() {
+    document.getElementById('login-container').classList.remove('hidden', 'opacity-0', 'pointer-events-none');
+    document.getElementById('login-container').classList.add('flex');
+    document.getElementById('app-container').classList.add('hidden');
+}
+
+async function showApp() {
+    // Fade out login UI
+    const loginContainer = document.getElementById('login-container');
+    loginContainer.classList.add('opacity-0', 'pointer-events-none');
+    setTimeout(() => {
+        loginContainer.classList.add('hidden');
+        loginContainer.classList.remove('flex');
+    }, 300); // Wait for transition
+
+    document.getElementById('app-container').classList.remove('hidden');
+
     initMap();
     setupBottomSheet();
     setupEventListeners();
+
+    // Fetch user profile
+    const { data: { user } } = await db.auth.getUser();
+    if (!user) {
+        showLogin();
+        return;
+    }
+
+    const { data: profile, error } = await db.from('profiles').select('id, role, assigned_zone_id').eq('id', user.id).single();
+    if (error || !profile) {
+        console.error("Profile error:", error);
+        showError('Failed to load user profile. Please contact Admin.');
+        return;
+    }
+
+    currentUserProfile = profile;
+    console.log('User role:', profile.role, 'Zone:', profile.assigned_zone_id);
     
+    if (profile.role === 'admin') {
+        document.getElementById('adminToolbar').classList.remove('hidden');
+        fetchPendingEdits();
+    }
+
     // Zone Isolation: Fetch and draw zones first, independently.
     try {
         await fetchZones();
     } catch (e) {
         console.error("Error fetching zones:", e);
     }
-    
+
     try {
         await fetchDoctors();
     } catch (e) {
         console.error("Error fetching doctors:", e);
         showError('Failed to load directory.');
     }
-    
+
     try {
         setupRealtime();
-    } catch(e) {
+    } catch (e) {
         console.warn("Realtime setup failed (expected on file:// origins):", e);
     }
-    
+
     setDbStatus(true);
-});
+}
+
+function setupLoginListeners() {
+    const loginForm = document.getElementById('loginForm');
+    if (!loginForm) return;
+
+    loginForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const email = document.getElementById('emailInput').value;
+        const password = document.getElementById('passwordInput').value;
+        const btnText = document.getElementById('loginBtnText');
+        const btnIcon = document.getElementById('loginBtnIcon');
+        const errorDiv = document.getElementById('loginError');
+        const errorText = document.getElementById('loginErrorText');
+
+        // Reset state
+        errorDiv.classList.add('hidden');
+        errorDiv.classList.remove('flex');
+        btnText.textContent = 'Signing in...';
+        btnIcon.className = 'ph-bold ph-spinner-gap animate-spin';
+
+        const { data, error } = await db.auth.signInWithPassword({
+            email: email,
+            password: password,
+        });
+
+        if (error) {
+            errorText.textContent = error.message;
+            errorDiv.classList.remove('hidden');
+            errorDiv.classList.add('flex');
+            btnText.textContent = 'Sign In';
+            btnIcon.className = 'ph-bold ph-arrow-right';
+        } else {
+            // Success
+            showApp();
+        }
+    });
+
+    const logoutBtn = document.getElementById('logoutBtn');
+    if (logoutBtn) {
+        logoutBtn.addEventListener('click', async () => {
+            await db.auth.signOut();
+            window.location.reload();
+        });
+    }
+}
 
 // ── Map Init ──────────────────────────────────────────────────────────────────
 function initMap() {
     map = L.map('map', { zoomControl: false, touchZoom: true, dragging: true, tap: false })
-           .setView([12.9716, 77.5946], 11);
+        .setView([12.9716, 77.5946], 11);
 
     L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
         attribution: '© OpenStreetMap contributors © CARTO',
@@ -76,14 +176,14 @@ async function fetchDoctors() {
     while (true) {
         try {
             const { data, error } = await db.from('doctors').select('*, locations(*)').range(from, from + pageSize - 1);
-            if (error) { 
-                console.error("Supabase fetch error:", error); 
-                showError('Failed to load directory. See console for details.'); 
-                return; 
+            if (error) {
+                console.error("Supabase fetch error:", error);
+                showError('Failed to load directory. See console for details.');
+                return;
             }
-            
+
             console.log(`Fetched doctors ${from} to ${from + pageSize - 1}:`, data);
-            
+
             if (!data || data.length === 0) break;
             allData = allData.concat(data);
             if (data.length < pageSize) break;  // last page
@@ -189,9 +289,9 @@ function drawZonePolygons() {
 function getSpecClass(doc) {
     if (doc.is_approximate) return 'spec-approximate';
     const cat = (doc.spec_category || '').toLowerCase();
-    if (cat === 'spine')   return 'spec-spine';
-    if (cat === 'trauma')  return 'spec-trauma';
-    if (cat === 'both')    return 'spec-both';
+    if (cat === 'spine') return 'spec-spine';
+    if (cat === 'trauma') return 'spec-trauma';
+    if (cat === 'both') return 'spec-both';
     return 'spec-general';
 }
 
@@ -199,7 +299,7 @@ function getSpecClass(doc) {
 function getNavUrl(doc) {
     const primaryLoc = doc.locations && doc.locations.find(l => l.is_primary) || (doc.locations && doc.locations[0]);
     if (!primaryLoc) return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(doc.name)}+Bangalore`;
-    
+
     // Priority 1: explicit Google Maps link
     if (primaryLoc.map_link && primaryLoc.map_link.startsWith('http')) {
         return primaryLoc.map_link;
@@ -223,7 +323,19 @@ function renderDoctors(docs) {
     document.getElementById('doctorCount').textContent = `${docs.length} doctors`;
 
     if (!docs.length) {
-        list.innerHTML = '<div class="text-slate-400 text-center py-10 text-sm">No doctors found.</div>';
+        if (currentUserProfile && currentUserProfile.role === 'rep' && !currentUserProfile.assigned_zone_id) {
+            list.innerHTML = `
+                <div class="flex flex-col items-center justify-center py-12 px-6 text-center mt-10">
+                    <div class="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mb-4">
+                        <i class="ph-fill ph-warning-circle text-red-500 text-3xl"></i>
+                    </div>
+                    <h3 class="text-lg font-bold text-slate-800 mb-1">No Territory Assigned</h3>
+                    <p class="text-sm text-slate-500 leading-relaxed">Your account has not been assigned a zone. Please contact your administrator to get access to your territory.</p>
+                </div>
+            `;
+        } else {
+            list.innerHTML = '<div class="text-slate-400 text-center py-10 text-sm">No doctors found.</div>';
+        }
         return;
     }
 
@@ -242,7 +354,7 @@ function renderDoctors(docs) {
         Object.keys(grouped).sort((a, b) => (parseInt(a) || 99) - (parseInt(b) || 99)).forEach(zId => {
             const zone = zonesData.find(z => z.id == zId);
             const zoneName = zone ? zone.name : 'Unassigned / Other';
-            
+
             const header = document.createElement('div');
             header.className = 'px-5 py-3 bg-slate-50 border-y border-slate-100 text-[10px] font-bold text-slate-400 uppercase tracking-widest sticky top-0 z-10';
             header.textContent = zoneName;
@@ -261,6 +373,19 @@ function renderDoctors(docs) {
     }
 
     list.appendChild(frag);
+
+    // Step 4: Map Bounds Handling - Automatically center and zoom to the loaded pins
+    if (markerCluster.getLayers().length > 0) {
+        // Use a small delay to ensure layers are fully added to the map visually
+        setTimeout(() => {
+            map.fitBounds(markerCluster.getBounds(), { 
+                padding: [40, 40], 
+                maxZoom: 15,
+                animate: true,
+                duration: 1
+            });
+        }, 100);
+    }
 }
 
 function addMarker(doc) {
@@ -372,33 +497,42 @@ function showDetail(id) {
             <h2 class="text-xl font-bold text-slate-800 leading-tight">${doc.name}</h2>
             <p class="text-sm text-slate-500 mt-1 mb-3">${doc.specialization || 'General Ortho'}</p>
             
-            ${doc.abone_usage_percentage ? `
+            ${(doc.abone_usage_percentage !== null && doc.abone_usage_percentage !== undefined && doc.abone_usage_percentage !== '') ? `
             <div class="flex items-center gap-2 bg-blue-50 border border-blue-100 rounded-lg p-2.5 mb-4">
                 <i class="ph-fill ph-chart-pie-slice text-blue-500 text-lg"></i>
                 <span class="text-xs font-bold text-blue-800">Abone Usage: <span class="text-sm">${doc.abone_usage_percentage}%</span></span>
             </div>` : ''}
 
+            ${doc.rep_notes ? `
+            <div class="bg-amber-50 border border-amber-100 rounded-xl p-3 mb-4">
+                <div class="text-[10px] font-bold text-amber-600 uppercase tracking-wider mb-1 flex items-center gap-1.5">
+                    <i class="ph-fill ph-notebook text-sm"></i> Rep Notes
+                </div>
+                <p class="text-sm text-amber-900 italic leading-relaxed">${doc.rep_notes}</p>
+            </div>` : ''}
+
+
             <div class="space-y-3">
                 ${(doc.locations && doc.locations.length > 0) ? doc.locations.map((loc, idx) => {
-                    const locNavUrl = (loc.map_link && loc.map_link.startsWith('http')) ? loc.map_link : 
-                        (loc.lat && loc.lon ? `https://www.google.com/maps/search/?api=1&query=${loc.lat},${loc.lon}` : 
-                        `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(loc.hospital_name)}+Bangalore`);
-                    
-                    const zone = zonesData.find(z => z.id == loc.zone_id);
-                    const zoneName = zone ? zone.name : null;
-                    
-                    // Build location stars HTML
-                    const locRating  = parseFloat(loc.hospital_rating) || 0;
-                    let locStarsHtml = '';
-                    if (locRating > 0) {
-                        for (let i = 1; i <= 5; i++) {
-                            if (i <= locRating) locStarsHtml += '<i class="ph-fill ph-star text-yellow-400 text-[10px]"></i>';
-                            else if (i-0.5 <= locRating) locStarsHtml += '<i class="ph-fill ph-star-half text-yellow-400 text-[10px]"></i>';
-                            else locStarsHtml += '<i class="ph ph-star text-slate-300 text-[10px]"></i>';
-                        }
-                    }
+        const locNavUrl = (loc.map_link && loc.map_link.startsWith('http')) ? loc.map_link :
+            (loc.lat && loc.lon ? `https://www.google.com/maps/search/?api=1&query=${loc.lat},${loc.lon}` :
+                `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(loc.hospital_name)}+Bangalore`);
 
-                    return `
+        const zone = zonesData.find(z => z.id == loc.zone_id);
+        const zoneName = zone ? zone.name : null;
+
+        // Build location stars HTML
+        const locRating = parseFloat(loc.hospital_rating) || 0;
+        let locStarsHtml = '';
+        if (locRating > 0) {
+            for (let i = 1; i <= 5; i++) {
+                if (i <= locRating) locStarsHtml += '<i class="ph-fill ph-star text-yellow-400 text-[10px]"></i>';
+                else if (i - 0.5 <= locRating) locStarsHtml += '<i class="ph-fill ph-star-half text-yellow-400 text-[10px]"></i>';
+                else locStarsHtml += '<i class="ph ph-star text-slate-300 text-[10px]"></i>';
+            }
+        }
+
+        return `
                     <div class="bg-slate-50 rounded-xl p-3.5 border border-slate-100 ${idx > 0 ? 'mt-3' : ''}">
                         <div class="flex justify-between items-start mb-1.5">
                             <div class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
@@ -424,7 +558,7 @@ function showDetail(id) {
                         </a>
                     </div>
                     `;
-                }).join('') : '<div class="text-sm text-slate-500 p-3">No locations listed.</div>'}
+    }).join('') : '<div class="text-sm text-slate-500 p-3">No locations listed.</div>'}
 
                 ${doc.phone ? `
                 <a href="tel:${doc.phone}"
@@ -435,10 +569,15 @@ function showDetail(id) {
                     <i class="ph-fill ph-phone-slash text-xl"></i> No Phone Listed
                 </button>`}
 
-                <button onclick="openEditModal(${doc.id})"
-                   class="w-full bg-blue-50 text-blue-700 border border-blue-200 py-3 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 active:scale-95 transition-transform">
+                ${(currentUserProfile && currentUserProfile.role === 'rep') ? `
+                <button onclick="openSuggestEditModal('${doc.id}')"
+                   class="w-full bg-orange-50 text-orange-700 border border-orange-200 py-3 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 active:scale-95 transition-transform mt-3">
+                    <i class="ph-fill ph-lightbulb"></i> Suggest Edit
+                </button>` : `
+                <button onclick="openEditModal('${doc.id}')"
+                   class="w-full bg-blue-50 text-blue-700 border border-blue-200 py-3 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 active:scale-95 transition-transform mt-3">
                     <i class="ph-fill ph-pencil-simple"></i> Edit Notes
-                </button>
+                </button>`}
             </div>
         </div>
     `;
@@ -459,7 +598,7 @@ function showDetail(id) {
         map.flyTo(marker.getLatLng(), 16, { animate: true, duration: 1 });
         marker.unbindTooltip();
         marker.bindTooltip(`<span class="font-bold whitespace-nowrap">${doc.name}</span>`, { permanent: true, direction: 'top', offset: [0, -40] }).openTooltip();
-        
+
         setTimeout(() => {
             if (marker.getElement()) L.DomUtil.addClass(marker.getElement(), 'marker-blinking');
         }, 1000);
@@ -491,9 +630,9 @@ function isMobile() { return window.innerWidth < 768; }
 // ── Bottom Sheet (3 snap points — mobile only) ────────────────────────────────
 let setSheetState;
 function setupBottomSheet() {
-    const sheet      = document.getElementById('bottomSheet');
-    const handle     = document.getElementById('dragHandle');
-    const sheetH     = () => sheet.offsetHeight;
+    const sheet = document.getElementById('bottomSheet');
+    const handle = document.getElementById('dragHandle');
+    const sheetH = () => sheet.offsetHeight;
 
     // SNAP POSITIONS (translateY values, sheet height = 92vh)
     // peek = only handle visible (92vh - 56px)
@@ -505,17 +644,17 @@ function setupBottomSheet() {
         full: window.innerHeight * 0.08,
     });
 
-    setSheetState = function(state) {
+    setSheetState = function (state) {
         if (!isMobile()) {
             // Desktop: sidebar is always visible, no transforms
             sheet.style.transition = 'none';
-            sheet.style.transform  = 'none';
+            sheet.style.transform = 'none';
             return;
         }
         const y = snapY();
         const val = state === 'full' ? y.full : state === 'half' ? y.half : y.peek;
         sheet.style.transition = 'transform 0.32s cubic-bezier(0.25, 0.8, 0.25, 1)';
-        sheet.style.transform  = `translateY(${val}px)`;
+        sheet.style.transform = `translateY(${val}px)`;
         sheet._state = state;
     };
 
@@ -545,9 +684,9 @@ function setupBottomSheet() {
         const m = (sheet.style.transform || '').match(/translateY\((.+)px\)/);
         const curY = m ? parseFloat(m[1]) : snapY().half;
         const { peek, half, full } = snapY();
-        if      (curY < (full  + half) / 2)  setSheetState('full');
-        else if (curY < (half  + peek) / 2)  setSheetState('half');
-        else                                   setSheetState('peek');
+        if (curY < (full + half) / 2) setSheetState('full');
+        else if (curY < (half + peek) / 2) setSheetState('half');
+        else setSheetState('peek');
     });
 
     window.addEventListener('resize', () => {
@@ -584,9 +723,51 @@ function setupEventListeners() {
     document.getElementById('nearMeBtn').onclick = findNearMe;
 
     // Edit Modal
-    document.getElementById('closeModalBtn').onclick  = closeEditModal;
-    document.getElementById('cancelEditBtn').onclick  = closeEditModal;
-    document.getElementById('saveEditBtn').onclick    = saveEdit;
+    document.getElementById('closeModalBtn').onclick = closeEditModal;
+    document.getElementById('cancelEditBtn').onclick = closeEditModal;
+    document.getElementById('saveEditBtn').onclick = saveEdit;
+
+    // Suggest Edit Modal (Reps)
+    const closeSuggestBtn = document.getElementById('closeSuggestModalBtn');
+    if (closeSuggestBtn) closeSuggestBtn.onclick = closeSuggestModal;
+    const cancelSuggestBtn = document.getElementById('cancelSuggestBtn');
+    if (cancelSuggestBtn) cancelSuggestBtn.onclick = closeSuggestModal;
+    const submitSuggestBtn = document.getElementById('submitSuggestBtn');
+    if (submitSuggestBtn) submitSuggestBtn.onclick = submitSuggestion;
+
+    // Admin Approvals View Toggle
+    const toggleApprovalsBtn = document.getElementById('toggleApprovalsBtn');
+    if (toggleApprovalsBtn) toggleApprovalsBtn.onclick = () => toggleApprovalsView(true);
+    
+    const closeApprovalsBtn = document.getElementById('closeApprovalsBtn');
+    if (closeApprovalsBtn) closeApprovalsBtn.onclick = () => toggleApprovalsView(false);
+
+    // Admin Diff Modal
+    const closeDiffModalBtn = document.getElementById('closeDiffModalBtn');
+    if (closeDiffModalBtn) closeDiffModalBtn.onclick = closeDiffModal;
+    const approveEditBtn = document.getElementById('approveEditBtn');
+    if (approveEditBtn) approveEditBtn.onclick = approveEdit;
+    const rejectEditBtn = document.getElementById('rejectEditBtn');
+    if (rejectEditBtn) rejectEditBtn.onclick = rejectEdit;
+}
+
+function toggleApprovalsView(show) {
+    const docList = document.getElementById('doctorList');
+    const detail = document.getElementById('detail-card');
+    const approvals = document.getElementById('admin-approvals-view');
+
+    if (show) {
+        docList.classList.add('hidden');
+        detail.classList.add('hidden');
+        detail.classList.remove('flex');
+        approvals.classList.remove('hidden');
+        approvals.classList.add('flex');
+        fetchPendingEdits(); // Refresh data when opening
+    } else {
+        approvals.classList.add('hidden');
+        approvals.classList.remove('flex');
+        docList.classList.remove('hidden');
+    }
 }
 
 // ── Near Me ───────────────────────────────────────────────────────────────────
@@ -607,7 +788,7 @@ function findNearMe() {
 
         renderDoctors(withDist);
         L.circleMarker([uLat, uLon], { radius: 8, fillColor: '#3b82f6', color: '#fff', weight: 2, fillOpacity: 0.9 })
-         .addTo(map).bindPopup('You are here').openPopup();
+            .addTo(map).bindPopup('You are here').openPopup();
         map.setView([uLat, uLon], 13);
         btn.innerHTML = '<i class="ph-fill ph-navigation-arrow text-2xl"></i>';
         document.querySelectorAll('.zone-filter').forEach(b => b.classList.remove('active'));
@@ -620,18 +801,18 @@ function findNearMe() {
 function haversine(lat1, lon1, lat2, lon2) {
     const R = 6371, toR = Math.PI / 180;
     const dLat = (lat2 - lat1) * toR, dLon = (lon2 - lon1) * toR;
-    const a = Math.sin(dLat/2)**2 + Math.cos(lat1*toR)*Math.cos(lat2*toR)*Math.sin(dLon/2)**2;
-    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * toR) * Math.cos(lat2 * toR) * Math.sin(dLon / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
 // ── Edit Modal ────────────────────────────────────────────────────────────────
 function openEditModal(id) {
     const doc = doctorsData.find(d => d.id === id);
     if (!doc) return;
-    document.getElementById('editDocId').value   = doc.id;
-    document.getElementById('editPhone').value   = doc.phone || '';
-    document.getElementById('editTiming').value  = doc.consultation_timing || '';
-    document.getElementById('editNotes').value   = doc.rep_notes || '';
+    document.getElementById('editDocId').value = doc.id;
+    document.getElementById('editPhone').value = doc.phone || '';
+    document.getElementById('editTiming').value = doc.consultation_timing || '';
+    document.getElementById('editNotes').value = doc.rep_notes || '';
     const modal = document.getElementById('editModal');
     modal.classList.remove('hidden');
     modal.classList.add('flex');
@@ -644,11 +825,11 @@ function closeEditModal() {
 }
 
 async function saveEdit() {
-    const id     = document.getElementById('editDocId').value;
-    const phone  = document.getElementById('editPhone').value;
+    const id = document.getElementById('editDocId').value;
+    const phone = document.getElementById('editPhone').value;
     const timing = document.getElementById('editTiming').value;
-    const notes  = document.getElementById('editNotes').value;
-    const btn    = document.getElementById('saveText');
+    const notes = document.getElementById('editNotes').value;
+    const btn = document.getElementById('saveText');
     btn.textContent = 'Saving…';
 
     const { error } = await db.from('doctors')
@@ -666,18 +847,275 @@ async function saveEdit() {
     setTimeout(() => { closeEditModal(); btn.textContent = 'Save Changes'; }, 900);
 }
 
+// ── Suggest Edit Modal (Reps) ─────────────────────────────────────────────────
+function openSuggestEditModal(id) {
+    const doc = doctorsData.find(d => d.id === id);
+    if (!doc) return;
+    document.getElementById('suggestDocId').value = doc.id;
+    document.getElementById('suggestAboneUsage').value = (doc.abone_usage_percentage !== null && doc.abone_usage_percentage !== undefined) ? doc.abone_usage_percentage : '';
+    document.getElementById('suggestNotes').value = ''; // clear previous notes
+    
+    const modal = document.getElementById('suggestEditModal');
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+}
+
+function closeSuggestModal() {
+    const modal = document.getElementById('suggestEditModal');
+    modal.classList.add('hidden');
+    modal.classList.remove('flex');
+}
+
+async function submitSuggestion() {
+    if (!currentUserProfile) return;
+    
+    const id = document.getElementById('suggestDocId').value;
+    const usage = document.getElementById('suggestAboneUsage').value;
+    const notes = document.getElementById('suggestNotes').value;
+    
+    const btnText = document.getElementById('submitSuggestText');
+    const btnIcon = document.getElementById('submitSuggestIcon');
+    
+    btnText.textContent = 'Submitting...';
+    btnIcon.className = 'ph-bold ph-spinner-gap animate-spin';
+
+    const newData = {};
+    if (usage !== null && usage !== undefined && usage !== '') newData.abone_usage_percentage = parseInt(usage);
+    if (notes !== null && notes !== undefined && notes !== '') newData.rep_notes = notes;
+
+    const { error } = await db.from('pending_edits').insert({
+        doctor_id: id,
+        suggested_by: currentUserProfile.id,
+        new_data: newData,
+        status: 'pending'
+    });
+
+    if (error) {
+        alert('Submission failed: ' + error.message);
+        btnText.textContent = 'Submit for Approval';
+        btnIcon.className = 'ph-bold ph-paper-plane-right';
+        return;
+    }
+    
+    // Show success state
+    btnText.textContent = 'Sent for Approval!';
+    btnIcon.className = 'ph-bold ph-check text-white';
+    
+    setTimeout(() => { 
+        closeSuggestModal(); 
+        // Reset button for next time
+        btnText.textContent = 'Submit for Approval';
+        btnIcon.className = 'ph-bold ph-paper-plane-right';
+    }, 1500);
+}
+
+// ── Admin Pending Edits ───────────────────────────────────────────────────────
+async function fetchPendingEdits() {
+    const { data, error } = await db.from('pending_edits')
+        .select('*, doctors(name), profiles(first_name, last_name)')
+        .eq('status', 'pending')
+        .order('created_at', { ascending: false });
+
+    if (error) {
+        console.error("Error fetching pending edits:", error);
+        return;
+    }
+
+    pendingEditsData = data;
+    
+    // Update badge
+    const badge = document.getElementById('pendingBadge');
+    if (badge) {
+        if (data.length > 0) {
+            badge.textContent = data.length;
+            badge.classList.remove('hidden');
+        } else {
+            badge.classList.add('hidden');
+        }
+    }
+
+    renderPendingEdits();
+}
+
+function renderPendingEdits() {
+    const list = document.getElementById('admin-approvals-list');
+    if (!list) return;
+
+    list.innerHTML = '';
+
+    if (!pendingEditsData || pendingEditsData.length === 0) {
+        list.innerHTML = '<div class="text-slate-400 text-center py-10 text-sm">No pending edits to review.</div>';
+        return;
+    }
+
+    const frag = document.createDocumentFragment();
+
+    pendingEditsData.forEach(edit => {
+        const docName = edit.doctors ? edit.doctors.name : 'Unknown Doctor';
+        const repName = edit.profiles ? `${edit.profiles.first_name || ''} ${edit.profiles.last_name || ''}`.trim() : 'Unknown Rep';
+        const dateStr = new Date(edit.created_at).toLocaleDateString();
+
+        const card = document.createElement('div');
+        card.className = 'bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col gap-3';
+        card.innerHTML = `
+            <div class="flex justify-between items-start">
+                <div>
+                    <div class="text-[10px] font-bold text-indigo-500 uppercase tracking-wider mb-0.5">Suggested by ${repName} • ${dateStr}</div>
+                    <h3 class="text-sm font-bold text-slate-800">${docName}</h3>
+                </div>
+            </div>
+            <button onclick="viewDiff('${edit.id}')"
+                class="w-full bg-indigo-50 text-indigo-700 border border-indigo-200 py-2 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 active:scale-95 transition-transform hover:bg-indigo-100 mt-1">
+                <i class="ph-bold ph-git-diff"></i> View Diff
+            </button>
+        `;
+        frag.appendChild(card);
+    });
+
+    list.appendChild(frag);
+}
+
+function viewDiff(editId) {
+    const edit = pendingEditsData.find(e => e.id === editId);
+    if (!edit) return;
+    
+    currentEditId = editId;
+    const doc = doctorsData.find(d => d.id === edit.doctor_id);
+    
+    let contentHtml = `<div class="text-sm font-bold text-slate-800 mb-2">Doctor: ${doc ? doc.name : 'Unknown'}</div>`;
+    
+    // Compare new_data with existing doc
+    if (edit.new_data) {
+        if (edit.new_data.abone_usage_percentage !== undefined) {
+            const oldVal = doc ? (doc.abone_usage_percentage || '0') : 'N/A';
+            const newVal = edit.new_data.abone_usage_percentage;
+            contentHtml += `
+                <div class="mb-3">
+                    <div class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">% Abone Usage</div>
+                    <div class="flex items-center gap-3 bg-slate-50 p-2.5 rounded-lg border border-slate-200">
+                        <span class="text-red-500 font-bold line-through">${oldVal}%</span>
+                        <i class="ph-bold ph-arrow-right text-slate-400"></i>
+                        <span class="text-green-600 font-bold text-lg">${newVal}%</span>
+                    </div>
+                </div>
+            `;
+        }
+        if (edit.new_data.rep_notes !== undefined) {
+            const oldVal = doc ? (doc.rep_notes || 'None') : 'N/A';
+            const newVal = edit.new_data.rep_notes;
+            contentHtml += `
+                <div>
+                    <div class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Rep Notes</div>
+                    <div class="bg-red-50 text-red-800 p-2.5 rounded-t-lg border border-red-100 text-sm italic">
+                        - ${oldVal}
+                    </div>
+                    <div class="bg-green-50 text-green-800 p-2.5 rounded-b-lg border border-green-100 border-t-0 text-sm">
+                        + ${newVal}
+                    </div>
+                </div>
+            `;
+        }
+    }
+
+    document.getElementById('diffContent').innerHTML = contentHtml;
+    
+    const modal = document.getElementById('diffModal');
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+}
+
+function closeDiffModal() {
+    const modal = document.getElementById('diffModal');
+    modal.classList.add('hidden');
+    modal.classList.remove('flex');
+    currentEditId = null;
+}
+
+async function approveEdit() {
+    if (!currentEditId) return;
+    const editId = currentEditId;
+    const edit = pendingEditsData.find(e => e.id === editId);
+    if (!edit || !edit.new_data) return;
+
+    const btn = document.getElementById('approveEditBtn');
+    const originalHtml = btn.innerHTML;
+    btn.innerHTML = '<i class="ph-bold ph-spinner-gap animate-spin"></i> Approving...';
+    btn.disabled = true;
+
+    // 1. Update doctors table
+    const { error: updateError } = await db.from('doctors')
+        .update(edit.new_data)
+        .eq('id', edit.doctor_id);
+
+    if (updateError) {
+        alert("Failed to update doctor: " + updateError.message);
+        btn.innerHTML = originalHtml;
+        btn.disabled = false;
+        return;
+    }
+
+    // 2. Update pending_edits status
+    const { error: statusError } = await db.from('pending_edits')
+        .update({ status: 'approved' })
+        .eq('id', editId);
+
+    if (statusError) {
+        console.error("Failed to update edit status:", statusError);
+    }
+
+    // 3. Refresh live data
+    await fetchDoctors();
+    await fetchPendingEdits();
+    
+    closeDiffModal();
+    btn.innerHTML = originalHtml;
+    btn.disabled = false;
+}
+
+async function rejectEdit() {
+    if (!currentEditId) return;
+    const editId = currentEditId;
+
+    const btn = document.getElementById('rejectEditBtn');
+    const originalHtml = btn.innerHTML;
+    btn.innerHTML = '<i class="ph-bold ph-spinner-gap animate-spin"></i> Rejecting...';
+    btn.disabled = true;
+
+    const { error } = await db.from('pending_edits')
+        .update({ status: 'rejected' })
+        .eq('id', editId);
+
+    if (error) {
+        alert("Failed to reject edit: " + error.message);
+    } else {
+        await fetchPendingEdits();
+        closeDiffModal();
+    }
+    
+    btn.innerHTML = originalHtml;
+    btn.disabled = false;
+}
+
 // ── Realtime Sync ─────────────────────────────────────────────────────────────
 function setupRealtime() {
     db.channel('schema-db-changes')
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'doctors' }, payload => {
-          const idx = doctorsData.findIndex(d => d.id === payload.new.id);
-          if (idx !== -1) doctorsData[idx] = payload.new;
-      }).subscribe();
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'doctors' }, payload => {
+            const idx = doctorsData.findIndex(d => d.id === payload.new.id);
+            if (idx !== -1) {
+                // Merge to preserve nested relations like locations
+                doctorsData[idx] = { ...doctorsData[idx], ...payload.new };
+                
+                // If this is the currently active doctor in the detail view, refresh the view
+                if (activeDoctorId === payload.new.id) {
+                    showDetail(activeDoctorId);
+                }
+            }
+        }).subscribe();
 }
 
 // ── DB Status Indicator ───────────────────────────────────────────────────────
 function setDbStatus(ok) {
-    document.getElementById('db-dot').className   = `w-2 h-2 rounded-full ${ok ? 'bg-green-500' : 'bg-red-400'}`;
+    document.getElementById('db-dot').className = `w-2 h-2 rounded-full ${ok ? 'bg-green-500' : 'bg-red-400'}`;
     document.getElementById('db-label').textContent = ok ? 'Live' : 'Offline';
 }
 

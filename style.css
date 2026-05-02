@@ -1,6 +1,10 @@
 /* =============================================
-   SCROLLBAR
+   GLOBAL & SCROLLBAR
    ============================================= */
+body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
