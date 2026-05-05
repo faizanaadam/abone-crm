@@ -77,6 +77,11 @@ async function showApp() {
         fetchPendingEdits();
     }
 
+    // Show 'Add Doctor' FAB for reps
+    if (profile.role === 'rep') {
+        document.getElementById('addDoctorFab').classList.remove('hidden');
+    }
+
     // Zone Isolation: Fetch and draw zones first, independently.
     try {
         await fetchZones();
@@ -451,6 +456,7 @@ function addMarker(doc) {
     let lat = null;
     let lon = null;
     let primaryLoc = null;
+    let isApproximate = false;
 
     if (doc.locations && doc.locations.length > 0) {
         primaryLoc = doc.locations.find(l => l.is_primary) || doc.locations[0];
@@ -463,6 +469,7 @@ function addMarker(doc) {
     if (isNaN(lat)) lat = null;
     if (isNaN(lon)) lon = null;
 
+    // Validate coordinates are within Bangalore bounds
     if (lat !== null && lon !== null) {
         if (lat < 12.7 || lat > 13.25 || lon < 77.3 || lon > 77.85) {
             lat = null;
@@ -470,8 +477,48 @@ function addMarker(doc) {
         }
     }
 
+    // ── FALLBACK: Use zone center if no valid coordinates ──
+    if (lat === null || lon === null) {
+        const zoneId = primaryLoc ? primaryLoc.zone_id : null;
+        if (zoneId) {
+            const zone = zonesData.find(z => z.id == zoneId);
+            if (zone) {
+                let cLat = null, cLng = null;
+
+                // Priority 1: Use DB-stored center if available
+                if (zone.center_lat && zone.center_lng) {
+                    cLat = parseFloat(zone.center_lat);
+                    cLng = parseFloat(zone.center_lng);
+                }
+                // Priority 2: Compute centroid from polygon_coords
+                else if (zone.polygon_coords && zone.polygon_coords.length > 0) {
+                    let sumLat = 0, sumLng = 0;
+                    zone.polygon_coords.forEach(coord => {
+                        sumLat += coord[0];
+                        sumLng += coord[1];
+                    });
+                    cLat = sumLat / zone.polygon_coords.length;
+                    cLng = sumLng / zone.polygon_coords.length;
+                }
+
+                if (cLat && cLng) {
+                    lat = cLat;
+                    lon = cLng;
+                    isApproximate = true;
+
+                    // Step 4: Jitter — offset by ±0.001 to prevent pin stacking
+                    lat += (Math.random() - 0.5) * 0.002;
+                    lon += (Math.random() - 0.5) * 0.002;
+                }
+            }
+        }
+    }
+
+    // Tag the doc object so detail view & navigate can check it
+    doc._isApproximate = isApproximate;
+
     if (lat !== null && lon !== null) {
-        const specClass = getSpecClass(doc);
+        const specClass = isApproximate ? 'spec-approximate' : getSpecClass(doc);
         
         let extraClass = '';
         if (focusModeActive) {
@@ -493,13 +540,20 @@ function addMarker(doc) {
 
         const icon = L.divIcon({
             className: `custom-marker ${specClass} ${extraClass}`,
-            iconSize: [30, 42],
-            iconAnchor: [15, 42],
+            iconSize: isApproximate ? [20, 20] : [30, 42],
+            iconAnchor: isApproximate ? [10, 10] : [15, 42],
             html: `<div class="marker-pin"></div>`
         });
         const marker = L.marker([lat, lon], { icon });
-        marker.bindTooltip(`<b>${doc.name}</b>`);
+        const tooltipText = isApproximate 
+            ? `<b>${doc.name}</b><br><span style="color:#ea580c;font-size:10px;">⚠ Approximate Location</span><br><span style="font-size:9px;color:#64748b;">Double-tap → Google Maps</span>`
+            : `<b>${doc.name}</b><br><span style="font-size:9px;color:#64748b;">Double-tap → Google Maps</span>`;
+        marker.bindTooltip(tooltipText);
         marker.on('click', () => showDetail(doc.id));
+        marker.on('dblclick', () => {
+            const navUrl = getNavUrl(doc);
+            window.open(navUrl, '_blank');
+        });
         markerCluster.addLayer(marker);
         markersMap.set(doc.id, marker);
     }
@@ -561,10 +615,11 @@ function showDetail(id) {
 
     if (isMobile()) setSheetState('half');
 
-    const approxWarning = doc.is_approximate ? `
+    const isApprox = doc.is_approximate || doc._isApproximate;
+    const approxWarning = isApprox ? `
         <div class="flex items-start gap-2 bg-orange-50 border border-orange-200 rounded-xl p-3 mb-4">
             <span class="text-lg">📍</span>
-            <p class="text-xs text-orange-700 font-medium">Location estimated. Opening Google Search for this clinic.</p>
+            <p class="text-xs text-orange-700 font-medium">Approximate Location — Check Address Details. Navigation will search by name instead of coordinates.</p>
         </div>` : '';
 
     const navUrl = getNavUrl(doc);
@@ -592,8 +647,11 @@ function showDetail(id) {
 
             <div class="space-y-3">
                 ${(doc.locations && doc.locations.length > 0) ? doc.locations.map((loc, idx) => {
-        const locNavUrl = (loc.map_link && loc.map_link.startsWith('http')) ? loc.map_link :
-            (loc.lat && loc.lon ? `https://www.google.com/maps/search/?api=1&query=${loc.lat},${loc.lon}` :
+        const locIsApprox = doc._isApproximate || (!loc.lat && !loc.lon);
+        const locNavUrl = locIsApprox
+            ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent('Dr. ' + doc.name + ' ' + (loc.hospital_name || '') + ' Bangalore')}`
+            : (loc.map_link && loc.map_link.startsWith('http')) ? loc.map_link :
+              (loc.lat && loc.lon ? `https://www.google.com/maps/search/?api=1&query=${loc.lat},${loc.lon}` :
                 `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(loc.hospital_name)}+Bangalore`);
 
         const zone = zonesData.find(z => z.id == loc.zone_id);
@@ -1079,6 +1137,100 @@ async function submitLogVisit() {
     }, 1500);
 }
 
+// ── Add Doctor (Rep) ──────────────────────────────────────────────────────────
+function openAddDoctorModal() {
+    // Clear all fields
+    document.getElementById('addDocName').value = '';
+    document.getElementById('addDocSpec').value = 'Orthopaedic Surgeon';
+    document.getElementById('addDocSpecCat').value = 'General';
+    document.getElementById('addDocPhone').value = '';
+    document.getElementById('addDocHospital').value = '';
+    document.getElementById('addDocAddress').value = '';
+    document.getElementById('addDocTiming').value = '';
+    document.getElementById('addDocMapLink').value = '';
+    document.getElementById('addDocNotes').value = '';
+    
+    // Populate zone dropdown
+    const zoneSelect = document.getElementById('addDocZone');
+    zoneSelect.innerHTML = '';
+    zonesData.forEach(z => {
+        const opt = document.createElement('option');
+        opt.value = z.id;
+        opt.textContent = z.name;
+        // Pre-select rep's assigned zone
+        if (currentUserProfile && currentUserProfile.assigned_zone_id == z.id) {
+            opt.selected = true;
+        }
+        zoneSelect.appendChild(opt);
+    });
+    
+    const modal = document.getElementById('addDoctorModal');
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+}
+
+function closeAddDoctorModal() {
+    const modal = document.getElementById('addDoctorModal');
+    modal.classList.add('hidden');
+    modal.classList.remove('flex');
+}
+
+async function submitAddDoctor() {
+    if (!currentUserProfile) return;
+    
+    const name = document.getElementById('addDocName').value.trim();
+    const hospital = document.getElementById('addDocHospital').value.trim();
+    
+    if (!name) { showToast('Doctor name is required.', 'error'); return; }
+    if (!hospital) { showToast('Hospital/Clinic name is required.', 'error'); return; }
+    
+    const btnText = document.getElementById('submitAddDocText');
+    const btnIcon = document.getElementById('submitAddDocIcon');
+    btnText.textContent = 'Submitting...';
+    btnIcon.className = 'ph-bold ph-spinner-gap animate-spin';
+
+    const newData = {
+        name: name,
+        specialization: document.getElementById('addDocSpec').value,
+        spec_category: document.getElementById('addDocSpecCat').value,
+        phone: document.getElementById('addDocPhone').value.trim() || null,
+        rep_notes: document.getElementById('addDocNotes').value.trim() || null,
+        location: {
+            hospital_name: hospital,
+            hospital_address: document.getElementById('addDocAddress').value.trim() || null,
+            consultation_timing: document.getElementById('addDocTiming').value.trim() || null,
+            zone_id: document.getElementById('addDocZone').value,
+            map_link: document.getElementById('addDocMapLink').value.trim() || null,
+            is_primary: true
+        }
+    };
+
+    const { error } = await db.from('pending_edits').insert({
+        doctor_id: null,
+        suggested_by: currentUserProfile.id,
+        new_data: newData,
+        action: 'add_doctor',
+        status: 'pending'
+    });
+
+    if (error) {
+        showToast('Submission failed: ' + error.message, 'error');
+        btnText.textContent = 'Submit for Approval';
+        btnIcon.className = 'ph-bold ph-paper-plane-right';
+        return;
+    }
+    
+    btnText.textContent = 'Sent for Approval!';
+    btnIcon.className = 'ph-bold ph-check-circle text-white';
+    showToast('New doctor submitted for admin approval!', 'success');
+    
+    setTimeout(() => { 
+        closeAddDoctorModal(); 
+        btnText.textContent = 'Submit for Approval';
+        btnIcon.className = 'ph-bold ph-paper-plane-right';
+    }, 1500);
+}
+
 // ── Admin Pending Edits ───────────────────────────────────────────────────────
 async function fetchPendingEdits() {
     const { data, error } = await db.from('pending_edits')
@@ -1121,7 +1273,8 @@ function renderPendingEdits() {
     const frag = document.createDocumentFragment();
 
     pendingEditsData.forEach(edit => {
-        const docName = edit.doctors ? edit.doctors.name : 'Unknown Doctor';
+        const isAddDoctor = edit.action === 'add_doctor';
+        const docName = isAddDoctor ? (edit.new_data?.name || 'New Doctor') : (edit.doctors ? edit.doctors.name : 'Unknown Doctor');
         const repName = edit.profiles ? `${edit.profiles.first_name || ''} ${edit.profiles.last_name || ''}`.trim() : 'Unknown Rep';
         const dateStr = new Date(edit.created_at).toLocaleDateString();
 
@@ -1150,40 +1303,85 @@ function viewDiff(editId) {
     if (!edit) return;
     
     currentEditId = editId;
-    const doc = doctorsData.find(d => d.id === edit.doctor_id);
+    const isAddDoctor = edit.action === 'add_doctor';
+    const doc = isAddDoctor ? null : doctorsData.find(d => d.id === edit.doctor_id);
     
-    let contentHtml = `<div class="text-sm font-bold text-slate-800 mb-2">Doctor: ${doc ? doc.name : 'Unknown'}</div>`;
+    let contentHtml = '';
     
-    // Compare new_data with existing doc
-    if (edit.new_data) {
-        if (edit.new_data.abone_usage_percentage !== undefined) {
-            const oldVal = doc ? (doc.abone_usage_percentage || '0') : 'N/A';
-            const newVal = edit.new_data.abone_usage_percentage;
-            contentHtml += `
-                <div class="mb-3">
-                    <div class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">% Abone Usage</div>
-                    <div class="flex items-center gap-3 bg-slate-50 p-2.5 rounded-lg border border-slate-200">
-                        <span class="text-red-500 font-bold line-through">${oldVal}%</span>
-                        <i class="ph-bold ph-arrow-right text-slate-400"></i>
-                        <span class="text-green-600 font-bold text-lg">${newVal}%</span>
+    if (isAddDoctor && edit.new_data) {
+        // Show all the new doctor details in a clean format
+        contentHtml = `
+            <div class="text-sm font-bold text-green-700 mb-3 flex items-center gap-2">
+                <i class="ph-fill ph-user-plus"></i> New Doctor Request
+            </div>
+            <div class="space-y-2">
+                <div class="bg-green-50 p-3 rounded-lg border border-green-100">
+                    <div class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Doctor Name</div>
+                    <div class="text-sm font-bold text-slate-800">${edit.new_data.name || '—'}</div>
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                    <div class="bg-slate-50 p-2.5 rounded-lg border border-slate-100">
+                        <div class="text-[10px] font-bold text-slate-400 uppercase">Specialization</div>
+                        <div class="text-xs text-slate-700">${edit.new_data.specialization || '—'}</div>
+                    </div>
+                    <div class="bg-slate-50 p-2.5 rounded-lg border border-slate-100">
+                        <div class="text-[10px] font-bold text-slate-400 uppercase">Category</div>
+                        <div class="text-xs text-slate-700">${edit.new_data.spec_category || '—'}</div>
                     </div>
                 </div>
-            `;
-        }
-        if (edit.new_data.rep_notes !== undefined) {
-            const oldVal = doc ? (doc.rep_notes || 'None') : 'N/A';
-            const newVal = edit.new_data.rep_notes;
-            contentHtml += `
-                <div>
-                    <div class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Rep Notes</div>
-                    <div class="bg-red-50 text-red-800 p-2.5 rounded-t-lg border border-red-100 text-sm italic">
-                        - ${oldVal}
+                ${edit.new_data.phone ? `<div class="bg-slate-50 p-2.5 rounded-lg border border-slate-100">
+                    <div class="text-[10px] font-bold text-slate-400 uppercase">Phone</div>
+                    <div class="text-xs text-slate-700">${edit.new_data.phone}</div>
+                </div>` : ''}
+                ${edit.new_data.location ? `
+                <hr class="border-slate-100">
+                <div class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Primary Location</div>
+                <div class="bg-blue-50 p-3 rounded-lg border border-blue-100 space-y-1">
+                    <div class="text-sm font-bold text-slate-800">${edit.new_data.location.hospital_name || '—'}</div>
+                    ${edit.new_data.location.hospital_address ? `<div class="text-xs text-slate-600">${edit.new_data.location.hospital_address}</div>` : ''}
+                    ${edit.new_data.location.consultation_timing ? `<div class="text-xs text-slate-500">🕒 ${edit.new_data.location.consultation_timing}</div>` : ''}
+                    ${edit.new_data.location.zone_id ? `<div class="text-xs text-blue-600 font-bold">Zone: ${zonesData.find(z => z.id == edit.new_data.location.zone_id)?.name || edit.new_data.location.zone_id}</div>` : ''}
+                </div>` : ''}
+                ${edit.new_data.rep_notes ? `<div class="bg-amber-50 p-2.5 rounded-lg border border-amber-100">
+                    <div class="text-[10px] font-bold text-amber-600 uppercase">Rep Notes</div>
+                    <div class="text-xs text-amber-900 italic">${edit.new_data.rep_notes}</div>
+                </div>` : ''}
+            </div>
+        `;
+    } else {
+        contentHtml = `<div class="text-sm font-bold text-slate-800 mb-2">Doctor: ${doc ? doc.name : 'Unknown'}</div>`;
+    
+        // Compare new_data with existing doc
+        if (edit.new_data) {
+            if (edit.new_data.abone_usage_percentage !== undefined) {
+                const oldVal = doc ? (doc.abone_usage_percentage || '0') : 'N/A';
+                const newVal = edit.new_data.abone_usage_percentage;
+                contentHtml += `
+                    <div class="mb-3">
+                        <div class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">% Abone Usage</div>
+                        <div class="flex items-center gap-3 bg-slate-50 p-2.5 rounded-lg border border-slate-200">
+                            <span class="text-red-500 font-bold line-through">${oldVal}%</span>
+                            <i class="ph-bold ph-arrow-right text-slate-400"></i>
+                            <span class="text-green-600 font-bold text-lg">${newVal}%</span>
+                        </div>
                     </div>
-                    <div class="bg-green-50 text-green-800 p-2.5 rounded-b-lg border border-green-100 border-t-0 text-sm">
-                        + ${newVal}
+                `;
+            }
+            if (edit.new_data.rep_notes !== undefined) {
+                const oldVal = doc ? (doc.rep_notes || 'None') : 'N/A';
+                const newVal = edit.new_data.rep_notes;
+                contentHtml += `
+                    <div>
+                        <div class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Rep Notes</div>
+                        <div class="bg-red-50 text-red-800 p-2.5 rounded-t-lg border border-red-100 text-sm italic">
+                            - ${oldVal}
+                        </div>
+                        <div class="bg-green-50 text-green-800 p-2.5 rounded-b-lg border border-green-100 border-t-0 text-sm">
+                            + ${newVal}
+                        </div>
                     </div>
-                </div>
-            `;
+                `;
+            }
         }
     }
 
@@ -1212,34 +1410,78 @@ async function approveEdit() {
     btn.innerHTML = '<i class="ph-bold ph-spinner-gap animate-spin"></i> Approving...';
     btn.disabled = true;
 
-    // 1. Update doctors table
-    const { error: updateError } = await db.from('doctors')
-        .update(edit.new_data)
-        .eq('id', edit.doctor_id);
+    if (edit.action === 'add_doctor') {
+        // ── INSERT new doctor + location ──
+        const docData = {
+            name: edit.new_data.name,
+            specialization: edit.new_data.specialization || null,
+            spec_category: edit.new_data.spec_category || null,
+            phone: edit.new_data.phone || null,
+            rep_notes: edit.new_data.rep_notes || null,
+            is_approximate: true
+        };
 
-    if (updateError) {
-        showToast("Failed to update doctor: " + updateError.message, 'error');
-        btn.innerHTML = originalHtml;
-        btn.disabled = false;
-        return;
+        const { data: newDoc, error: docError } = await db.from('doctors')
+            .insert(docData)
+            .select()
+            .single();
+
+        if (docError) {
+            showToast('Failed to create doctor: ' + docError.message, 'error');
+            btn.innerHTML = originalHtml;
+            btn.disabled = false;
+            return;
+        }
+
+        // Insert location if provided
+        if (edit.new_data.location) {
+            const locData = {
+                doctor_id: newDoc.id,
+                hospital_name: edit.new_data.location.hospital_name,
+                hospital_address: edit.new_data.location.hospital_address || null,
+                consultation_timing: edit.new_data.location.consultation_timing || null,
+                zone_id: edit.new_data.location.zone_id || null,
+                map_link: edit.new_data.location.map_link || null,
+                is_primary: true
+            };
+
+            const { error: locError } = await db.from('locations').insert(locData);
+            if (locError) {
+                console.error('Failed to create location:', locError);
+                showToast('Doctor created but location failed: ' + locError.message, 'error');
+            }
+        }
+    } else {
+        // ── Existing edit flow: UPDATE doctor ──
+        const { error: updateError } = await db.from('doctors')
+            .update(edit.new_data)
+            .eq('id', edit.doctor_id);
+
+        if (updateError) {
+            showToast('Failed to update doctor: ' + updateError.message, 'error');
+            btn.innerHTML = originalHtml;
+            btn.disabled = false;
+            return;
+        }
     }
 
-    // 2. Update pending_edits status
+    // Mark as approved
     const { error: statusError } = await db.from('pending_edits')
         .update({ status: 'approved' })
         .eq('id', editId);
 
     if (statusError) {
-        console.error("Failed to update edit status:", statusError);
+        console.error('Failed to update edit status:', statusError);
     }
 
-    // 3. Refresh live data
+    // Refresh
     await fetchDoctors();
     await fetchPendingEdits();
     
     closeDiffModal();
     btn.innerHTML = originalHtml;
     btn.disabled = false;
+    showToast(edit.action === 'add_doctor' ? 'New doctor approved & added!' : 'Edit approved & merged!', 'success');
 }
 
 async function rejectEdit() {
