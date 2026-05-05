@@ -1,0 +1,17 @@
+{
+  "name": "Abone Surgicals CRM",
+  "short_name": "Abone CRM",
+  "description": "Geographic lead directory for Abone Surgicals Reps.",
+  "start_url": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f8fafc",
+  "theme_color": "#004a99",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/3004/3004458.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

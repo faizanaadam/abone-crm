@@ -15,6 +15,7 @@ let activeSpec = 'all';
 let currentUserProfile = null;
 let pendingEditsData = [];
 let currentEditId = null;
+let focusModeActive = false;
 
 const ZONE_COLORS = ['#ef4444', '#f97316', '#f59e0b', '#84cc16', '#22c55e',
     '#10b981', '#06b6d4', '#3b82f6', '#6366f1', '#a855f7'];
@@ -70,7 +71,6 @@ async function showApp() {
     }
 
     currentUserProfile = profile;
-    console.log('User role:', profile.role, 'Zone:', profile.assigned_zone_id);
     
     if (profile.role === 'admin') {
         document.getElementById('adminToolbar').classList.remove('hidden');
@@ -175,14 +175,13 @@ async function fetchDoctors() {
     const pageSize = 1000;
     while (true) {
         try {
-            const { data, error } = await db.from('doctors').select('*, locations(*)').range(from, from + pageSize - 1);
+            const { data, error } = await db.from('doctors').select('*, locations(*), activity_logs(*)').eq('is_active', true).range(from, from + pageSize - 1);
             if (error) {
                 console.error("Supabase fetch error:", error);
                 showError('Failed to load directory. See console for details.');
                 return;
             }
 
-            console.log(`Fetched doctors ${from} to ${from + pageSize - 1}:`, data);
 
             if (!data || data.length === 0) break;
             allData = allData.concat(data);
@@ -201,12 +200,18 @@ async function fetchDoctors() {
         if (!d || !d.name) return;
         const key = d.name.trim().toLowerCase();
         if (!mapObj.has(key)) {
-            d.locations = d.locations || [];
+            d.locations = (d.locations || []).filter(l => l.is_active !== false);
+            d.activity_logs = d.activity_logs || [];
             mapObj.set(key, d);
         } else {
             const existing = mapObj.get(key);
             if (d.locations && d.locations.length > 0) {
-                existing.locations.push(...d.locations);
+                const activeLocs = d.locations.filter(l => l.is_active !== false);
+                existing.locations.push(...activeLocs);
+            }
+            if (d.activity_logs && d.activity_logs.length > 0) {
+                existing.activity_logs = existing.activity_logs || [];
+                existing.activity_logs.push(...d.activity_logs);
             }
         }
     });
@@ -223,6 +228,60 @@ function getFilteredDoctors() {
     if (activeZone !== 'all') list = list.filter(d => d.locations && d.locations.some(l => l.zone_id == activeZone));
     if (activeSpec !== 'all') list = list.filter(d => (d.spec_category || 'General') === activeSpec);
     return list;
+}
+
+function toggleFocusMode() {
+    focusModeActive = document.getElementById('focusModeToggle').checked;
+    renderDoctors(getFilteredDoctors());
+}
+
+function downloadZoneReport() {
+    const list = getFilteredDoctors();
+    if (list.length === 0) {
+        alert("No records to export.");
+        return;
+    }
+
+    const headers = [
+        "Doctor ID", "Name", "Specialization", "Abone Usage %", "Rep Notes",
+        "Locations (Names)", "Total Logs", "Last Visit Date"
+    ];
+
+    const rows = list.map(doc => {
+        let locNames = "";
+        if (doc.locations && doc.locations.length > 0) {
+            locNames = doc.locations.map(l => l.hospital_name || '').join("; ");
+        }
+
+        let totalLogs = 0;
+        let lastVisit = "";
+        if (doc.activity_logs && doc.activity_logs.length > 0) {
+            totalLogs = doc.activity_logs.length;
+            const sortedLogs = [...doc.activity_logs].sort((a, b) => new Date(b.visit_date) - new Date(a.visit_date));
+            lastVisit = sortedLogs[0].visit_date.split('T')[0];
+        }
+
+        return [
+            doc.id,
+            `"${(doc.name || '').replace(/"/g, '""')}"`,
+            `"${(doc.specialization || '').replace(/"/g, '""')}"`,
+            doc.abone_usage_percentage || '',
+            `"${(doc.rep_notes || '').replace(/"/g, '""')}"`,
+            `"${locNames.replace(/"/g, '""')}"`,
+            totalLogs,
+            lastVisit
+        ].join(",");
+    });
+
+    const csvContent = "data:text/csv;charset=utf-8," + encodeURIComponent([headers.join(","), ...rows].join("\n"));
+    const link = document.createElement("a");
+    const dateStr = new Date().toISOString().split('T')[0];
+    
+    link.setAttribute("href", csvContent);
+    link.setAttribute("download", `Abone_Sales_Report_${dateStr}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
 }
 
 // ── Zone Filters ──────────────────────────────────────────────────────────────
@@ -413,8 +472,27 @@ function addMarker(doc) {
 
     if (lat !== null && lon !== null) {
         const specClass = getSpecClass(doc);
+        
+        let extraClass = '';
+        if (focusModeActive) {
+            let lastVisit = null;
+            if (doc.activity_logs && doc.activity_logs.length > 0) {
+                const sortedLogs = [...doc.activity_logs].sort((a, b) => new Date(b.visit_date) - new Date(a.visit_date));
+                lastVisit = new Date(sortedLogs[0].visit_date);
+            }
+            
+            const thirtyDaysAgo = new Date();
+            thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+            
+            if (!lastVisit || lastVisit < thirtyDaysAgo) {
+                extraClass = 'focus-red marker-blinking';
+            } else {
+                extraClass = 'focus-faded';
+            }
+        }
+
         const icon = L.divIcon({
-            className: `custom-marker ${specClass}`,
+            className: `custom-marker ${specClass} ${extraClass}`,
             iconSize: [30, 42],
             iconAnchor: [15, 42],
             html: `<div class="marker-pin"></div>`
@@ -543,14 +621,14 @@ function showDetail(id) {
                                 ${loc.category ? `<span class="text-[10px] font-bold text-slate-500 bg-slate-200 px-2 py-0.5 rounded-full">${loc.category}</span>` : ''}
                             </div>
                         </div>
-                        <div class="text-sm font-medium text-slate-700">${loc.hospital_name || '—'}</div>
+                        <div class="text-sm font-medium text-slate-700 leading-relaxed">${loc.hospital_name || '—'}</div>
                         ${locStarsHtml ? `<div class="mt-0.5 flex items-center">${locStarsHtml} <span class="text-[10px] text-slate-500 ml-1">${locRating}</span></div>` : ''}
                         
                         <div class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-2 mb-1">Consultation Timing</div>
-                        <div class="text-sm text-slate-700">${loc.consultation_timing || 'Not available'}</div>
+                        <div class="text-sm text-slate-700 leading-relaxed">${loc.consultation_timing || 'Not available'}</div>
                         
                         <div class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-2 mb-1.5">Address</div>
-                        <div class="text-sm text-slate-700">${loc.hospital_address || 'Not available'}</div>
+                        <div class="text-sm text-slate-700 leading-relaxed">${loc.hospital_address || 'Not available'}</div>
                         
                         <a href="${locNavUrl}" target="_blank"
                            class="mt-2 inline-flex items-center gap-1 text-xs font-bold text-blue-600 hover:underline">
@@ -570,14 +648,26 @@ function showDetail(id) {
                 </button>`}
 
                 ${(currentUserProfile && currentUserProfile.role === 'rep') ? `
-                <button onclick="openSuggestEditModal('${doc.id}')"
-                   class="w-full bg-orange-50 text-orange-700 border border-orange-200 py-3 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 active:scale-95 transition-transform mt-3">
-                    <i class="ph-fill ph-lightbulb"></i> Suggest Edit
-                </button>` : `
-                <button onclick="openEditModal('${doc.id}')"
-                   class="w-full bg-blue-50 text-blue-700 border border-blue-200 py-3 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 active:scale-95 transition-transform mt-3">
-                    <i class="ph-fill ph-pencil-simple"></i> Edit Notes
-                </button>`}
+                <div class="flex gap-2 mt-3">
+                    <button onclick="openLogVisitModal('${doc.id}')"
+                       class="flex-[2] bg-[var(--primary-blue)] text-white py-3 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 active:scale-95 transition-transform shadow-[0_4px_6px_rgba(0,0,0,0.1)]">
+                        <i class="ph-bold ph-calendar-check text-lg"></i> Log Visit
+                    </button>
+                    <button onclick="openSuggestEditModal('${doc.id}')"
+                       class="flex-[1] bg-orange-50 text-orange-700 border border-orange-200 py-3 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 active:scale-95 transition-transform">
+                        <i class="ph-bold ph-lightbulb"></i> Suggest Edit
+                    </button>
+                </div>` : `
+                <div class="flex gap-2 mt-3">
+                    <button onclick="openEditModal('${doc.id}')"
+                       class="flex-[2] bg-blue-50 text-blue-700 border border-blue-200 py-3 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 active:scale-95 transition-transform">
+                        <i class="ph-fill ph-pencil-simple"></i> Edit Notes
+                    </button>
+                    <button onclick="archiveDoctor('${doc.id}')"
+                       class="flex-[1] bg-red-50 text-red-700 border border-red-200 py-3 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 active:scale-95 transition-transform">
+                        <i class="ph-bold ph-archive"></i> Archive
+                    </button>
+                </div>`}
             </div>
         </div>
     `;
@@ -824,6 +914,25 @@ function closeEditModal() {
     modal.classList.remove('flex');
 }
 
+async function archiveDoctor(id) {
+    if (!confirm('Are you sure you want to archive this lead? It will be removed from the active directory.')) return;
+
+    try {
+        const { error } = await db.from('doctors').update({ is_active: false }).eq('id', id);
+        if (error) throw error;
+        
+        // Remove from local state
+        doctorsData = doctorsData.filter(d => d.id !== id);
+        
+        // Refresh UI
+        closeDetail();
+        renderDoctors(getFilteredDoctors());
+    } catch (e) {
+        console.error("Error archiving:", e);
+        showToast('Failed to archive lead.', 'error');
+    }
+}
+
 async function saveEdit() {
     const id = document.getElementById('editDocId').value;
     const phone = document.getElementById('editPhone').value;
@@ -837,7 +946,7 @@ async function saveEdit() {
         .eq('id', id);
 
     if (error) {
-        alert('Save failed: ' + error.message);
+        showToast('Save failed: ' + error.message, 'error');
         btn.textContent = 'Save Changes';
         return;
     }
@@ -891,7 +1000,7 @@ async function submitSuggestion() {
     });
 
     if (error) {
-        alert('Submission failed: ' + error.message);
+        showToast('Submission failed: ' + error.message, 'error');
         btnText.textContent = 'Submit for Approval';
         btnIcon.className = 'ph-bold ph-paper-plane-right';
         return;
@@ -906,6 +1015,67 @@ async function submitSuggestion() {
         // Reset button for next time
         btnText.textContent = 'Submit for Approval';
         btnIcon.className = 'ph-bold ph-paper-plane-right';
+    }, 1500);
+}
+
+// ── Log Visit (Rep) ───────────────────────────────────────────────────────────
+function openLogVisitModal(id) {
+    const doc = doctorsData.find(d => d.id === id);
+    if (!doc) return;
+    
+    document.getElementById('logVisitDocId').value = doc.id;
+    document.getElementById('logVisitDate').value = new Date().toISOString().split('T')[0]; // Default to today
+    document.getElementById('logVisitOutcome').value = 'Samples Provided';
+    document.getElementById('logVisitNotes').value = '';
+    
+    const modal = document.getElementById('logVisitModal');
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+}
+
+function closeLogVisitModal() {
+    const modal = document.getElementById('logVisitModal');
+    modal.classList.add('hidden');
+    modal.classList.remove('flex');
+}
+
+async function submitLogVisit() {
+    if (!currentUserProfile) return;
+    
+    const docId = document.getElementById('logVisitDocId').value;
+    const visitDate = document.getElementById('logVisitDate').value;
+    const outcome = document.getElementById('logVisitOutcome').value;
+    const notes = document.getElementById('logVisitNotes').value;
+    
+    const btnText = document.getElementById('submitLogVisitText');
+    const btnIcon = document.getElementById('submitLogVisitIcon');
+    
+    btnText.textContent = 'Saving...';
+    btnIcon.className = 'ph-bold ph-spinner-gap animate-spin';
+
+    const { error } = await db.from('activity_logs').insert({
+        doctor_id: docId,
+        rep_id: currentUserProfile.id,
+        visit_date: visitDate,
+        outcome: outcome,
+        notes: notes
+    });
+
+    if (error) {
+        showToast('Failed to log visit: ' + error.message, 'error');
+        btnText.textContent = 'Save Log';
+        btnIcon.className = 'ph-bold ph-check';
+        return;
+    }
+    
+    // Show success state
+    btnText.textContent = 'Visit Logged!';
+    btnIcon.className = 'ph-bold ph-check-circle text-white';
+    
+    setTimeout(() => { 
+        closeLogVisitModal(); 
+        btnText.textContent = 'Save Log';
+        btnIcon.className = 'ph-bold ph-check';
     }, 1500);
 }
 
@@ -1048,7 +1218,7 @@ async function approveEdit() {
         .eq('id', edit.doctor_id);
 
     if (updateError) {
-        alert("Failed to update doctor: " + updateError.message);
+        showToast("Failed to update doctor: " + updateError.message, 'error');
         btn.innerHTML = originalHtml;
         btn.disabled = false;
         return;
@@ -1086,7 +1256,7 @@ async function rejectEdit() {
         .eq('id', editId);
 
     if (error) {
-        alert("Failed to reject edit: " + error.message);
+        showToast("Failed to reject edit: " + error.message, 'error');
     } else {
         await fetchPendingEdits();
         closeDiffModal();
@@ -1121,4 +1291,31 @@ function setDbStatus(ok) {
 
 function showError(msg) {
     document.getElementById('doctorList').innerHTML = `<div class="text-red-500 text-center p-6 text-sm">${msg}</div>`;
+}
+
+// ── Global Error Handling & Toasts ────────────────────────────────────────────
+function showToast(message, type = 'error') {
+    const container = document.getElementById('toastContainer');
+    if (!container) return;
+
+    const toast = document.createElement('div');
+    const isError = type === 'error';
+    
+    toast.className = `px-4 py-3 rounded-xl shadow-lg text-sm font-bold flex items-center gap-2 transform transition-all duration-300 translate-y-[-100%] opacity-0 pointer-events-auto ${isError ? 'bg-red-500 text-white shadow-red-500/30' : 'bg-emerald-500 text-white shadow-emerald-500/30'}`;
+    
+    toast.innerHTML = `
+        <i class="ph-bold ${isError ? 'ph-warning-circle' : 'ph-check-circle'} text-lg"></i>
+        <span>${message}</span>
+    `;
+
+    container.appendChild(toast);
+
+    setTimeout(() => {
+        toast.classList.remove('translate-y-[-100%]', 'opacity-0');
+    }, 10);
+
+    setTimeout(() => {
+        toast.classList.add('translate-y-[-100%]', 'opacity-0');
+        setTimeout(() => toast.remove(), 300);
+    }, 3000);
 }
