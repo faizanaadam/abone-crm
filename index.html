@@ -202,46 +202,12 @@
         </main>
     </div>
 
-    <!-- EDIT MODAL -->
-    <div id="editModal" class="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-[600] hidden items-center justify-center p-4">
-        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden" id="editModalContent">
-            <div class="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-                <h3 class="font-bold text-lg text-slate-800 flex items-center gap-2">
-                    <i class="ph-fill ph-pencil-simple text-blue-500"></i> Edit Lead
-                </h3>
-                <button id="closeModalBtn" class="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-200 transition-colors">
-                    <i class="ph ph-x text-xl"></i>
-                </button>
-            </div>
-            <div class="p-5 space-y-4">
-                <input type="hidden" id="editDocId">
-                <div>
-                    <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Phone</label>
-                    <input type="text" id="editPhone" class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm">
-                </div>
-                <div>
-                    <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Timings</label>
-                    <input type="text" id="editTiming" class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm">
-                </div>
-                <div>
-                    <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Rep Notes</label>
-                    <textarea id="editNotes" rows="3" placeholder="Add field feedback here..." class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm resize-none"></textarea>
-                </div>
-            </div>
-            <div class="p-5 bg-slate-50 border-t border-slate-100 flex justify-end gap-2">
-                <button id="cancelEditBtn" class="px-4 py-2 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50">Cancel</button>
-                <button id="saveEditBtn" class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 shadow-sm shadow-blue-200 flex items-center gap-2">
-                    <span id="saveText">Save Changes</span>
-                </button>
-            </div>
-        </div>
-        </div>
-    </div>
+    <!-- Deprecated Edit Modal Removed -->
 
     <!-- SUGGEST EDIT MODAL (Reps) -->
     <div id="suggestEditModal" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-[600] hidden items-center justify-center p-4 transition-all duration-300">
-        <div class="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-200" id="suggestEditModalContent">
-            <div class="p-6 border-b border-slate-100 flex justify-between items-center bg-white">
+        <div class="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-200 flex flex-col max-h-[90vh]" id="suggestEditModalContent">
+            <div class="p-6 border-b border-slate-100 flex justify-between items-center bg-white shrink-0">
                 <h3 class="font-bold text-xl text-slate-800 flex items-center gap-2.5">
                     <i class="ph-fill ph-lightbulb text-orange-500"></i> Suggest Revision
                 </h3>
@@ -249,7 +215,7 @@
                     <i class="ph ph-x text-xl"></i>
                 </button>
             </div>
-            <div class="p-5 space-y-4">
+            <div class="p-5 space-y-4 overflow-y-auto">
                 <input type="hidden" id="suggestDocId">
                 <div class="bg-blue-50 border border-blue-100 p-3 rounded-xl flex items-start gap-2">
                     <i class="ph-fill ph-info text-blue-500 mt-0.5"></i>
@@ -263,11 +229,24 @@
                     </div>
                 </div>
                 <div>
+                    <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Phone</label>
+                    <input type="tel" id="suggestPhone" class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-orange-500 outline-none text-sm" placeholder="Phone number">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Email</label>
+                    <input type="email" id="suggestEmail" class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-orange-500 outline-none text-sm" placeholder="Email address">
+                </div>
+                
+                <div id="suggestLocationsContainer" class="space-y-4 border-t border-slate-100 pt-4 mt-4">
+                    <!-- Dynamic locations go here -->
+                </div>
+
+                <div class="border-t border-slate-100 pt-4 mt-4">
                     <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Feedback / Notes</label>
                     <textarea id="suggestNotes" rows="3" placeholder="What changed? Additional context..." class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-orange-500 outline-none text-sm resize-none"></textarea>
                 </div>
             </div>
-            <div class="p-6 bg-slate-50 border-t border-slate-100 flex gap-3">
+            <div class="p-6 bg-slate-50 border-t border-slate-100 flex gap-3 shrink-0">
                 <button id="cancelSuggestBtn" onclick="closeSuggestModal()"
                     class="flex-1 px-4 py-3.5 bg-transparent border border-gray-300 rounded-2xl text-sm font-bold text-gray-600 hover:bg-gray-50 transition-colors">
                     Discard
@@ -398,9 +377,15 @@
                         </select>
                     </div>
                 </div>
-                <div>
-                    <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Phone Number</label>
-                    <input type="tel" id="addDocPhone" placeholder="+91 XXXXX XXXXX" class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-1 focus:ring-[var(--primary-blue)] outline-none text-sm">
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Phone Number</label>
+                        <input type="tel" id="addDocPhone" placeholder="+91 XXXXX XXXXX" class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-1 focus:ring-[var(--primary-blue)] outline-none text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Email</label>
+                        <input type="email" id="addDocEmail" placeholder="doctor@example.com" class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-1 focus:ring-[var(--primary-blue)] outline-none text-sm">
+                    </div>
                 </div>
 
                 <hr class="border-slate-100">
@@ -426,9 +411,20 @@
                         </select>
                     </div>
                 </div>
-                <div>
-                    <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Google Maps Link (optional)</label>
-                    <input type="url" id="addDocMapLink" placeholder="https://maps.google.com/..." class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-1 focus:ring-[var(--primary-blue)] outline-none text-sm">
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Google Maps Link (optional)</label>
+                        <input type="url" id="addDocMapLink" placeholder="https://maps.google.com/..." class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-1 focus:ring-[var(--primary-blue)] outline-none text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Hospital Type</label>
+                        <select id="addDocCategory" class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-1 focus:ring-[var(--primary-blue)] outline-none text-sm bg-white">
+                            <option value="">Select Type</option>
+                            <option value="Private">Private</option>
+                            <option value="Corporate">Corporate</option>
+                            <option value="Owned/Clinic">Owned/Clinic</option>
+                        </select>
+                    </div>
                 </div>
                 <div>
                     <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Rep Notes</label>

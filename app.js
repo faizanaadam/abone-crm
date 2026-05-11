@@ -647,12 +647,12 @@ function showDetail(id) {
 
             <div class="space-y-3">
                 ${(doc.locations && doc.locations.length > 0) ? doc.locations.map((loc, idx) => {
-        const locIsApprox = doc._isApproximate || (!loc.lat && !loc.lon);
-        const locNavUrl = locIsApprox
-            ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent('Dr. ' + doc.name + ' ' + (loc.hospital_name || '') + ' Bangalore')}`
-            : (loc.map_link && loc.map_link.startsWith('http')) ? loc.map_link :
-              (loc.lat && loc.lon ? `https://www.google.com/maps/search/?api=1&query=${loc.lat},${loc.lon}` :
-                `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(loc.hospital_name)}+Bangalore`);
+        const clinicPart = encodeURIComponent((loc.hospital_name || doc.name || '').trim());
+        const locNavUrl = (loc.map_link && loc.map_link.startsWith('http'))
+            ? loc.map_link
+            : (loc.lat && loc.lon && !doc.is_approximate && !doc._isApproximate)
+                ? `https://www.google.com/maps/search/?api=1&query=${loc.lat},${loc.lon}`
+                : `https://www.google.com/maps/search/?api=1&query=${clinicPart}+Bangalore`;
 
         const zone = zonesData.find(z => z.id == loc.zone_id);
         const zoneName = zone ? zone.name : null;
@@ -717,9 +717,9 @@ function showDetail(id) {
                     </button>
                 </div>` : `
                 <div class="flex gap-2 mt-3">
-                    <button onclick="openEditModal('${doc.id}')"
+                    <button onclick="openSuggestEditModal('${doc.id}')"
                        class="flex-[2] bg-blue-50 text-blue-700 border border-blue-200 py-3 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 active:scale-95 transition-transform">
-                        <i class="ph-fill ph-pencil-simple"></i> Edit Notes
+                        <i class="ph-fill ph-pencil-simple"></i> Edit Details
                     </button>
                     <button onclick="archiveDoctor('${doc.id}')"
                        class="flex-[1] bg-red-50 text-red-700 border border-red-200 py-3 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 active:scale-95 transition-transform">
@@ -874,12 +874,7 @@ function setupEventListeners() {
     // Near Me FAB
     document.getElementById('nearMeBtn').onclick = findNearMe;
 
-    // Edit Modal
-    document.getElementById('closeModalBtn').onclick = closeEditModal;
-    document.getElementById('cancelEditBtn').onclick = closeEditModal;
-    document.getElementById('saveEditBtn').onclick = saveEdit;
-
-    // Suggest Edit Modal (Reps)
+    // Suggest/Direct Edit Modal
     const closeSuggestBtn = document.getElementById('closeSuggestModalBtn');
     if (closeSuggestBtn) closeSuggestBtn.onclick = closeSuggestModal;
     const cancelSuggestBtn = document.getElementById('cancelSuggestBtn');
@@ -957,24 +952,7 @@ function haversine(lat1, lon1, lat2, lon2) {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// ── Edit Modal ────────────────────────────────────────────────────────────────
-function openEditModal(id) {
-    const doc = doctorsData.find(d => d.id === id);
-    if (!doc) return;
-    document.getElementById('editDocId').value = doc.id;
-    document.getElementById('editPhone').value = doc.phone || '';
-    document.getElementById('editTiming').value = doc.consultation_timing || '';
-    document.getElementById('editNotes').value = doc.rep_notes || '';
-    const modal = document.getElementById('editModal');
-    modal.classList.remove('hidden');
-    modal.classList.add('flex');
-}
-
-function closeEditModal() {
-    const modal = document.getElementById('editModal');
-    modal.classList.add('hidden');
-    modal.classList.remove('flex');
-}
+// ── Edit Modal Deprecated ───────────────────────────────────────────────────
 
 async function archiveDoctor(id) {
     if (!confirm('Are you sure you want to archive this lead? It will be removed from the active directory.')) return;
@@ -986,45 +964,81 @@ async function archiveDoctor(id) {
         // Remove from local state
         doctorsData = doctorsData.filter(d => d.id !== id);
         
+        const marker = markersMap.get(id);
+        if (marker) {
+            markerCluster.removeLayer(marker);
+            markersMap.delete(id);
+        }
+        
         // Refresh UI
         closeDetail();
         renderDoctors(getFilteredDoctors());
     } catch (e) {
         console.error("Error archiving:", e);
-        showToast('Failed to archive lead.', 'error');
+        showToast('Failed to archive lead: ' + (e.message || JSON.stringify(e)), 'error');
     }
 }
 
-async function saveEdit() {
-    const id = document.getElementById('editDocId').value;
-    const phone = document.getElementById('editPhone').value;
-    const timing = document.getElementById('editTiming').value;
-    const notes = document.getElementById('editNotes').value;
-    const btn = document.getElementById('saveText');
-    btn.textContent = 'Saving…';
 
-    const { error } = await db.from('doctors')
-        .update({ phone, rep_notes: notes })
-        .eq('id', id);
-
-    if (error) {
-        showToast('Save failed: ' + error.message, 'error');
-        btn.textContent = 'Save Changes';
-        return;
-    }
-    const idx = doctorsData.findIndex(d => d.id == id);
-    if (idx !== -1) { doctorsData[idx].phone = phone; doctorsData[idx].rep_notes = notes; }
-    btn.textContent = 'Saved!';
-    setTimeout(() => { closeEditModal(); btn.textContent = 'Save Changes'; }, 900);
-}
-
-// ── Suggest Edit Modal (Reps) ─────────────────────────────────────────────────
+// ── Suggest/Direct Edit Modal ─────────────────────────────────────────────────
 function openSuggestEditModal(id) {
     const doc = doctorsData.find(d => d.id === id);
     if (!doc) return;
     document.getElementById('suggestDocId').value = doc.id;
     document.getElementById('suggestAboneUsage').value = (doc.abone_usage_percentage !== null && doc.abone_usage_percentage !== undefined) ? doc.abone_usage_percentage : '';
+    document.getElementById('suggestPhone').value = doc.phone || '';
+    document.getElementById('suggestEmail').value = doc.email || '';
     document.getElementById('suggestNotes').value = ''; // clear previous notes
+    
+    const isRep = currentUserProfile && currentUserProfile.role === 'rep';
+    const btnText = document.getElementById('submitSuggestText');
+    const btnIcon = document.getElementById('submitSuggestIcon');
+    if (btnText && btnIcon) {
+        btnText.textContent = isRep ? 'Submit for Approval' : 'Save Changes directly';
+        btnIcon.className = isRep ? 'ph-bold ph-paper-plane-right' : 'ph-bold ph-floppy-disk';
+    }
+    
+    const container = document.getElementById('suggestLocationsContainer');
+    if (container) {
+        container.innerHTML = '';
+        if (doc.locations && doc.locations.length > 0) {
+            doc.locations.forEach((loc, idx) => {
+                const block = document.createElement('div');
+                block.className = 'bg-slate-50 border border-slate-200 rounded-xl p-3 mb-3';
+                const curCat = loc.category || '';
+                block.innerHTML = `
+                    <div class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Location ${idx + 1} ${loc.is_primary ? '(Primary)' : ''}</div>
+                    <input type="hidden" class="loc-id" value="${loc.id}">
+                    <div class="mb-2">
+                        <label class="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Hospital/Clinic Name</label>
+                        <input type="text" class="loc-name w-full px-2 py-1.5 border border-slate-200 rounded-lg focus:ring-1 focus:ring-orange-500 outline-none text-xs" value="${loc.hospital_name || ''}">
+                    </div>
+                    <div class="mb-2">
+                        <label class="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Address</label>
+                        <input type="text" class="loc-address w-full px-2 py-1.5 border border-slate-200 rounded-lg focus:ring-1 focus:ring-orange-500 outline-none text-xs" value="${loc.hospital_address || ''}">
+                    </div>
+                    <div class="grid grid-cols-2 gap-2 mb-2">
+                        <div>
+                            <label class="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Google Maps Link</label>
+                            <input type="url" class="loc-map w-full px-2 py-1.5 border border-slate-200 rounded-lg focus:ring-1 focus:ring-orange-500 outline-none text-xs text-blue-600" value="${loc.map_link || ''}" placeholder="https://maps.google.com/...">
+                        </div>
+                        <div>
+                            <label class="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Hospital Type</label>
+                            <select class="loc-category w-full px-2 py-1.5 border border-slate-200 rounded-lg focus:ring-1 focus:ring-orange-500 outline-none text-xs bg-white">
+                                <option value="" ${curCat === '' ? 'selected' : ''}>Select Type</option>
+                                <option value="Private" ${curCat === 'Private' ? 'selected' : ''}>Private</option>
+                                <option value="Corporate" ${curCat === 'Corporate' ? 'selected' : ''}>Corporate</option>
+                                <option value="Owned/Clinic" ${curCat === 'Owned/Clinic' ? 'selected' : ''}>Owned/Clinic</option>
+                            </select>
+                        </div>
+                    </div>
+                `;
+                container.appendChild(block);
+            });
+        } else {
+            container.innerHTML = '<div class="text-xs text-slate-500 italic">No locations available to edit.</div>';
+        }
+    }
     
     const modal = document.getElementById('suggestEditModal');
     modal.classList.remove('hidden');
@@ -1041,7 +1055,12 @@ async function submitSuggestion() {
     if (!currentUserProfile) return;
     
     const id = document.getElementById('suggestDocId').value;
+    const doc = doctorsData.find(d => d.id === id);
+    if (!doc) return;
+
     const usage = document.getElementById('suggestAboneUsage').value;
+    const phone = document.getElementById('suggestPhone') ? document.getElementById('suggestPhone').value : '';
+    const email = document.getElementById('suggestEmail') ? document.getElementById('suggestEmail').value : '';
     const notes = document.getElementById('suggestNotes').value;
     
     const btnText = document.getElementById('submitSuggestText');
@@ -1052,32 +1071,108 @@ async function submitSuggestion() {
 
     const newData = {};
     if (usage !== null && usage !== undefined && usage !== '') newData.abone_usage_percentage = parseInt(usage);
+    if (phone !== (doc.phone || '')) newData.phone = phone;
+    if (email !== (doc.email || '')) newData.email = email;
     if (notes !== null && notes !== undefined && notes !== '') newData.rep_notes = notes;
 
-    const { error } = await db.from('pending_edits').insert({
-        doctor_id: id,
-        suggested_by: currentUserProfile.id,
-        new_data: newData,
-        status: 'pending'
-    });
-
-    if (error) {
-        showToast('Submission failed: ' + error.message, 'error');
-        btnText.textContent = 'Submit for Approval';
-        btnIcon.className = 'ph-bold ph-paper-plane-right';
-        return;
+    // Process locations
+    const locations = [];
+    const container = document.getElementById('suggestLocationsContainer');
+    if (container) {
+        const blocks = container.querySelectorAll('.bg-slate-50');
+        blocks.forEach(block => {
+            const locId = block.querySelector('.loc-id').value;
+            const name = block.querySelector('.loc-name').value;
+            const address = block.querySelector('.loc-address').value;
+            const mapLink = block.querySelector('.loc-map').value;
+            const category = block.querySelector('.loc-category') ? block.querySelector('.loc-category').value : '';
+            
+            const originalLoc = doc.locations.find(l => l.id == locId);
+            if (originalLoc) {
+                if (name !== (originalLoc.hospital_name || '') ||
+                    address !== (originalLoc.hospital_address || '') ||
+                    mapLink !== (originalLoc.map_link || '') ||
+                    category !== (originalLoc.category || '')) {
+                    locations.push({
+                        id: locId,
+                        hospital_name: name,
+                        hospital_address: address,
+                        map_link: mapLink,
+                        category: category || null
+                    });
+                }
+            }
+        });
+        
+        if (locations.length > 0) {
+            newData.locations = locations;
+        }
     }
-    
-    // Show success state
-    btnText.textContent = 'Sent for Approval!';
-    btnIcon.className = 'ph-bold ph-check text-white';
-    
-    setTimeout(() => { 
-        closeSuggestModal(); 
-        // Reset button for next time
-        btnText.textContent = 'Submit for Approval';
-        btnIcon.className = 'ph-bold ph-paper-plane-right';
-    }, 1500);
+
+    const isRep = currentUserProfile && currentUserProfile.role === 'rep';
+
+    if (isRep) {
+        const { error } = await db.from('pending_edits').insert({
+            doctor_id: id,
+            suggested_by: currentUserProfile.id,
+            new_data: newData,
+            status: 'pending'
+        });
+
+        if (error) {
+            showToast('Submission failed: ' + error.message, 'error');
+            btnText.textContent = 'Submit for Approval';
+            btnIcon.className = 'ph-bold ph-paper-plane-right';
+            return;
+        }
+        
+        // Show success state
+        btnText.textContent = 'Sent for Approval!';
+        btnIcon.className = 'ph-bold ph-check text-white';
+        
+        setTimeout(() => { 
+            closeSuggestModal(); 
+            // Reset button for next time
+            btnText.textContent = 'Submit for Approval';
+            btnIcon.className = 'ph-bold ph-paper-plane-right';
+        }, 1500);
+    } else {
+        // Admin Direct Update
+        const { locations, ...docData } = newData;
+        if (Object.keys(docData).length > 0) {
+            const { error } = await db.from('doctors').update(docData).eq('id', id);
+            if (error) {
+                showToast('Update failed: ' + error.message, 'error');
+                btnText.textContent = 'Save Changes directly';
+                btnIcon.className = 'ph-bold ph-floppy-disk';
+                return;
+            }
+        }
+        if (locations && locations.length > 0) {
+            for (const loc of locations) {
+                const { id: locId, ...locDataToUpdate } = loc;
+                const { error: lErr } = await db.from('locations').update(locDataToUpdate).eq('id', locId);
+                if (lErr) {
+                    showToast('Failed to save location details: ' + lErr.message, 'error');
+                    console.error("Location update error:", lErr);
+                    return; // Stop on error
+                }
+            }
+        }
+        
+        btnText.textContent = 'Saved!';
+        btnIcon.className = 'ph-bold ph-check text-white';
+        showToast('Changes saved instantly.', 'success');
+        
+        // Refresh
+        await fetchDoctors();
+        
+        setTimeout(() => { 
+            closeSuggestModal(); 
+            btnText.textContent = 'Save Changes directly';
+            btnIcon.className = 'ph-bold ph-floppy-disk';
+        }, 1000);
+    }
 }
 
 // ── Log Visit (Rep) ───────────────────────────────────────────────────────────
@@ -1184,6 +1279,7 @@ async function submitAddDoctor() {
     
     const name = document.getElementById('addDocName').value.trim();
     const hospital = document.getElementById('addDocHospital').value.trim();
+    const email = document.getElementById('addDocEmail') ? document.getElementById('addDocEmail').value.trim() : null;
     
     if (!name) { showToast('Doctor name is required.', 'error'); return; }
     if (!hospital) { showToast('Hospital/Clinic name is required.', 'error'); return; }
@@ -1198,12 +1294,14 @@ async function submitAddDoctor() {
         specialization: document.getElementById('addDocSpec').value,
         spec_category: document.getElementById('addDocSpecCat').value,
         phone: document.getElementById('addDocPhone').value.trim() || null,
+        email: email || null,
         rep_notes: document.getElementById('addDocNotes').value.trim() || null,
         location: {
             hospital_name: hospital,
             hospital_address: document.getElementById('addDocAddress').value.trim() || null,
             consultation_timing: document.getElementById('addDocTiming').value.trim() || null,
             zone_id: document.getElementById('addDocZone').value,
+            category: document.getElementById('addDocCategory').value || null,
             map_link: document.getElementById('addDocMapLink').value.trim() || null,
             is_primary: true
         }
@@ -1333,10 +1431,16 @@ function viewDiff(editId) {
                         <div class="text-xs text-slate-700">${edit.new_data.spec_category || '—'}</div>
                     </div>
                 </div>
-                ${edit.new_data.phone ? `<div class="bg-slate-50 p-2.5 rounded-lg border border-slate-100">
-                    <div class="text-[10px] font-bold text-slate-400 uppercase">Phone</div>
-                    <div class="text-xs text-slate-700">${edit.new_data.phone}</div>
-                </div>` : ''}
+                <div class="grid grid-cols-2 gap-2">
+                    ${edit.new_data.phone ? `<div class="bg-slate-50 p-2.5 rounded-lg border border-slate-100">
+                        <div class="text-[10px] font-bold text-slate-400 uppercase">Phone</div>
+                        <div class="text-xs text-slate-700">${edit.new_data.phone}</div>
+                    </div>` : ''}
+                    ${edit.new_data.email ? `<div class="bg-slate-50 p-2.5 rounded-lg border border-slate-100 overflow-hidden">
+                        <div class="text-[10px] font-bold text-slate-400 uppercase">Email</div>
+                        <div class="text-xs text-slate-700 truncate" title="${edit.new_data.email}">${edit.new_data.email}</div>
+                    </div>` : ''}
+                </div>
                 ${edit.new_data.location ? `
                 <hr class="border-slate-100">
                 <div class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Primary Location</div>
@@ -1345,6 +1449,7 @@ function viewDiff(editId) {
                     ${edit.new_data.location.hospital_address ? `<div class="text-xs text-slate-600">${edit.new_data.location.hospital_address}</div>` : ''}
                     ${edit.new_data.location.consultation_timing ? `<div class="text-xs text-slate-500">🕒 ${edit.new_data.location.consultation_timing}</div>` : ''}
                     ${edit.new_data.location.zone_id ? `<div class="text-xs text-blue-600 font-bold">Zone: ${zonesData.find(z => z.id == edit.new_data.location.zone_id)?.name || edit.new_data.location.zone_id}</div>` : ''}
+                    ${edit.new_data.location.map_link ? `<div class="text-xs text-blue-600 font-bold truncate">📍 <a href="${edit.new_data.location.map_link}" target="_blank" class="underline hover:text-blue-800" title="${edit.new_data.location.map_link}">View on Maps</a></div>` : ''}
                 </div>` : ''}
                 ${edit.new_data.rep_notes ? `<div class="bg-amber-50 p-2.5 rounded-lg border border-amber-100">
                     <div class="text-[10px] font-bold text-amber-600 uppercase">Rep Notes</div>
@@ -1371,6 +1476,34 @@ function viewDiff(editId) {
                     </div>
                 `;
             }
+            if (edit.new_data.phone !== undefined) {
+                const oldVal = doc ? (doc.phone || 'None') : 'N/A';
+                const newVal = edit.new_data.phone;
+                contentHtml += `
+                    <div class="mb-3">
+                        <div class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Phone</div>
+                        <div class="flex items-center gap-3 bg-slate-50 p-2.5 rounded-lg border border-slate-200">
+                            <span class="text-red-500 font-bold line-through">${oldVal}</span>
+                            <i class="ph-bold ph-arrow-right text-slate-400"></i>
+                            <span class="text-green-600 font-bold">${newVal}</span>
+                        </div>
+                    </div>
+                `;
+            }
+            if (edit.new_data.email !== undefined) {
+                const oldVal = doc ? (doc.email || 'None') : 'N/A';
+                const newVal = edit.new_data.email;
+                contentHtml += `
+                    <div class="mb-3">
+                        <div class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Email</div>
+                        <div class="flex items-center gap-3 bg-slate-50 p-2.5 rounded-lg border border-slate-200">
+                            <span class="text-red-500 font-bold line-through">${oldVal}</span>
+                            <i class="ph-bold ph-arrow-right text-slate-400"></i>
+                            <span class="text-green-600 font-bold">${newVal}</span>
+                        </div>
+                    </div>
+                `;
+            }
             if (edit.new_data.rep_notes !== undefined) {
                 const oldVal = doc ? (doc.rep_notes || 'None') : 'N/A';
                 const newVal = edit.new_data.rep_notes;
@@ -1385,6 +1518,20 @@ function viewDiff(editId) {
                         </div>
                     </div>
                 `;
+            }
+            if (edit.new_data.locations && edit.new_data.locations.length > 0) {
+                contentHtml += `<div class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 mt-3">Location Edits</div>`;
+                edit.new_data.locations.forEach(locEdit => {
+                    const originalLoc = doc.locations.find(l => l.id === locEdit.id);
+                    if (originalLoc) {
+                        contentHtml += `<div class="bg-slate-50 border border-slate-200 rounded-lg p-2.5 mb-2 text-sm">
+                            <div class="font-bold text-slate-700 border-b border-slate-200 pb-1 mb-2">${originalLoc.hospital_name || 'Location'}</div>
+                            ${locEdit.hospital_name !== originalLoc.hospital_name ? `<div class="flex gap-2 mb-1"><span class="text-slate-400 w-16 flex-shrink-0">Name:</span> <span class="text-red-500 line-through truncate w-24">${originalLoc.hospital_name || ''}</span> <i class="ph-bold ph-arrow-right text-slate-400"></i> <span class="text-green-600 truncate w-24">${locEdit.hospital_name}</span></div>` : ''}
+                            ${locEdit.hospital_address !== originalLoc.hospital_address ? `<div class="flex gap-2 mb-1"><span class="text-slate-400 w-16 flex-shrink-0">Address:</span> <span class="text-red-500 line-through truncate w-24">${originalLoc.hospital_address || ''}</span> <i class="ph-bold ph-arrow-right text-slate-400"></i> <span class="text-green-600 truncate w-24">${locEdit.hospital_address}</span></div>` : ''}
+                            ${locEdit.map_link !== originalLoc.map_link ? `<div class="flex gap-2"><span class="text-slate-400 w-16 flex-shrink-0">Map Link:</span> <span class="text-red-500 line-through truncate w-24" title="${originalLoc.map_link || ''}">${originalLoc.map_link || 'None'}</span> <i class="ph-bold ph-arrow-right text-slate-400"></i> <span class="text-green-600 truncate w-24" title="${locEdit.map_link}">${locEdit.map_link}</span></div>` : ''}
+                        </div>`;
+                    }
+                });
             }
         }
     }
@@ -1445,6 +1592,7 @@ async function approveEdit() {
                 hospital_address: edit.new_data.location.hospital_address || null,
                 consultation_timing: edit.new_data.location.consultation_timing || null,
                 zone_id: edit.new_data.location.zone_id || null,
+                category: edit.new_data.location.category || null,
                 map_link: edit.new_data.location.map_link || null,
                 is_primary: true
             };
@@ -1456,16 +1604,34 @@ async function approveEdit() {
             }
         }
     } else {
-        // ── Existing edit flow: UPDATE doctor ──
-        const { error: updateError } = await db.from('doctors')
-            .update(edit.new_data)
-            .eq('id', edit.doctor_id);
+        // ── Existing edit flow: UPDATE doctor & locations ──
+        const { locations, ...docData } = edit.new_data;
 
-        if (updateError) {
-            showToast('Failed to update doctor: ' + updateError.message, 'error');
-            btn.innerHTML = originalHtml;
-            btn.disabled = false;
-            return;
+        if (Object.keys(docData).length > 0) {
+            const { error: updateError } = await db.from('doctors')
+                .update(docData)
+                .eq('id', edit.doctor_id);
+
+            if (updateError) {
+                showToast('Failed to update doctor: ' + updateError.message, 'error');
+                btn.innerHTML = originalHtml;
+                btn.disabled = false;
+                return;
+            }
+        }
+
+        if (locations && locations.length > 0) {
+            for (const loc of locations) {
+                const { id: locId, ...locDataToUpdate } = loc;
+                const { error: locError } = await db.from('locations')
+                    .update(locDataToUpdate)
+                    .eq('id', locId);
+                
+                if (locError) {
+                    console.error('Failed to update location:', locError);
+                    showToast('Doctor updated but location failed: ' + locError.message, 'error');
+                }
+            }
         }
     }
 
