@@ -857,7 +857,11 @@ function setupEventListeners() {
             (d.hospitals_practice || '').toLowerCase().includes(q) ||
             (d.clinic_name || '').toLowerCase().includes(q) ||
             (d.specialization || '').toLowerCase().includes(q) ||
-            (d.phone || '').includes(q)
+            (d.phone || '').includes(q) ||
+            (d.locations && d.locations.some(loc => 
+                (loc.hospital_name || '').toLowerCase().includes(q) ||
+                (loc.hospital_address || '').toLowerCase().includes(q)
+            ))
         );
         renderDoctors(list);
     });
