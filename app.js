@@ -647,7 +647,7 @@ function showDetail(id) {
                             <div class="bg-emerald-50 text-emerald-700 text-[11px] font-bold px-2 py-1 rounded-md flex items-center gap-1 border border-emerald-100 shadow-sm">
                                 <i class="ph-bold ph-check-circle text-emerald-500 text-sm"></i> Visited: ${lastVisit}
                             </div>
-                            <button onclick="quickMarkVisited('${doc.id}')" class="text-[10px] text-slate-500 hover:text-slate-700 underline font-semibold transition-colors">Log Again</button>
+                            <button onclick="unmarkVisited('${doc.id}')" class="text-[10px] text-red-500 hover:text-red-700 underline font-semibold transition-colors ml-1"><i class="ph-bold ph-x"></i> Remove</button>
                         </div>
                     `;
                 } else {
@@ -1307,6 +1307,46 @@ async function quickMarkVisited(id) {
     if (error) {
         showToast('Failed to sync visit log: ' + error.message, 'error');
         console.error("Activity log error:", error);
+    } else {
+        // We really should fetch again to get the real UUID for future deletions,
+        // but for now, rely on fallback deletion or hard refresh if needed.
+    }
+}
+
+async function unmarkVisited(id) {
+    if (!currentUserProfile) return;
+    if (!confirm('Remove this visit log?')) return;
+    
+    const doc = doctorsData.find(d => d.id === id);
+    if (!doc || !doc.activity_logs) return;
+    
+    const myLogs = doc.activity_logs.filter(l => l.rep_id === currentUserProfile.id).sort((a, b) => new Date(b.visit_date) - new Date(a.visit_date));
+    if (myLogs.length === 0) return;
+    
+    const logToDelete = myLogs[0]; // remove the most recent one
+    
+    // Optimistic UI update
+    doc.activity_logs = doc.activity_logs.filter(l => l !== logToDelete && l.id !== logToDelete.id);
+    showDetail(id);
+    renderDoctors(getFilteredDoctors());
+    
+    // Background sync
+    let query = db.from('activity_logs').delete();
+    
+    // If it was just created optimistically, it might not have an 'id' yet,
+    // so we delete based on matching the doctor_id and rep_id and timestamp if possible.
+    if (logToDelete.id) {
+        query = query.eq('id', logToDelete.id);
+    } else {
+        query = query.eq('doctor_id', id).eq('rep_id', currentUserProfile.id).eq('visit_date', logToDelete.visit_date);
+    }
+    
+    const { error } = await query;
+    if (error) {
+        showToast('Failed to remove visit: ' + error.message, 'error');
+        console.error("Unvisit error:", error);
+    } else {
+        showToast('Visit removed.', 'success');
     }
 }
 
