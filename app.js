@@ -1303,13 +1303,14 @@ async function quickMarkVisited(id) {
     renderDoctors(getFilteredDoctors());
     
     // Background sync
-    const { error } = await db.from('activity_logs').insert(logData);
+    const { data, error } = await db.from('activity_logs').insert(logData).select().single();
     if (error) {
         showToast('Failed to sync visit log: ' + error.message, 'error');
         console.error("Activity log error:", error);
-    } else {
-        // We really should fetch again to get the real UUID for future deletions,
-        // but for now, rely on fallback deletion or hard refresh if needed.
+    } else if (data) {
+        // Update local object with database ID and exact timestamp precision
+        logData.id = data.id;
+        logData.visit_date = data.visit_date;
     }
 }
 
@@ -1341,10 +1342,13 @@ async function unmarkVisited(id) {
         query = query.eq('doctor_id', id).eq('rep_id', currentUserProfile.id).eq('visit_date', logToDelete.visit_date);
     }
     
-    const { error } = await query;
+    const { data, error } = await query.select();
     if (error) {
         showToast('Failed to remove visit: ' + error.message, 'error');
         console.error("Unvisit error:", error);
+    } else if (data && data.length === 0) {
+        showToast('Delete blocked by database (RLS) or row not found.', 'error');
+        console.warn("Delete returned 0 rows. ID tried:", logToDelete.id);
     } else {
         showToast('Visit removed.', 'success');
     }
