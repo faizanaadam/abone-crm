@@ -582,6 +582,14 @@ function createDoctorCard(doc) {
             <span class="truncate">${primaryLoc.hospital_name}</span>
         </div>` : ''}
         
+        ${(() => {
+            const myLogs = (doc.activity_logs || []).filter(l => currentUserProfile && l.rep_id === currentUserProfile.id).sort((a, b) => new Date(b.visit_date) - new Date(a.visit_date));
+            if (myLogs.length > 0) {
+                return `<div class="mt-2 text-[10px] font-bold text-green-600 bg-green-50 inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-green-100"><i class="ph-bold ph-check-circle"></i> Visited: ${new Date(myLogs[0].visit_date).toLocaleDateString()}</div>`;
+            }
+            return '';
+        })()}
+        
         <div class="mt-3 flex gap-2">
             ${doc.phone ? `
             <a href="tel:${doc.phone}" onclick="event.stopPropagation()"
@@ -628,7 +636,31 @@ function showDetail(id) {
         <div class="p-5 pb-2">
             ${approxWarning}
             <h2 class="text-xl font-bold text-slate-800 leading-tight">${doc.name}</h2>
-            <p class="text-sm text-slate-500 mt-1 mb-3">${doc.specialization || 'General Ortho'}</p>
+            <p class="text-sm text-slate-500 mt-1">${doc.specialization || 'General Ortho'}</p>
+            
+            ${(() => {
+                const myLogs = (doc.activity_logs || []).filter(l => currentUserProfile && l.rep_id === currentUserProfile.id).sort((a, b) => new Date(b.visit_date) - new Date(a.visit_date));
+                if (myLogs.length > 0) {
+                    const lastVisit = new Date(myLogs[0].visit_date).toLocaleDateString();
+                    return `
+                        <div class="flex items-center gap-2 mt-2 mb-3">
+                            <div class="bg-emerald-50 text-emerald-700 text-[11px] font-bold px-2 py-1 rounded-md flex items-center gap-1 border border-emerald-100 shadow-sm">
+                                <i class="ph-bold ph-check-circle text-emerald-500 text-sm"></i> Visited: ${lastVisit}
+                            </div>
+                            <button onclick="quickMarkVisited('${doc.id}')" class="text-[10px] text-slate-500 hover:text-slate-700 underline font-semibold transition-colors">Log Again</button>
+                        </div>
+                    `;
+                } else {
+                    return `
+                        <div class="mt-2 mb-3">
+                            <button onclick="quickMarkVisited('${doc.id}')" class="flex items-center gap-1.5 text-xs font-bold text-slate-500 bg-slate-50 hover:bg-slate-100 hover:text-slate-800 px-3 py-1.5 rounded-lg transition-all border border-slate-200 active:scale-95 shadow-sm">
+                                <div class="w-3.5 h-3.5 rounded border-2 border-slate-400 bg-white flex items-center justify-center pointer-events-none transition-colors"></div>
+                                Mark as Visited
+                            </button>
+                        </div>
+                    `;
+                }
+            })()}
             
             ${(doc.abone_usage_percentage !== null && doc.abone_usage_percentage !== undefined && doc.abone_usage_percentage !== '') ? `
             <div class="flex items-center gap-2 bg-blue-50 border border-blue-100 rounded-lg p-2.5 mb-4">
@@ -695,6 +727,33 @@ function showDetail(id) {
                     </div>
                     `;
     }).join('') : '<div class="text-sm text-slate-500 p-3">No locations listed.</div>'}
+
+                ${(() => {
+                    const nearest = getNearestDoctors(doc, 3);
+                    if (nearest.length > 0) {
+                        return `
+                            <div class="mt-6 mb-2 border-t border-slate-100 pt-5">
+                                <div class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-3 flex items-center gap-1.5">
+                                    <i class="ph-bold ph-map-pin text-sm"></i> Nearest Doctors
+                                </div>
+                                <div class="space-y-2">
+                                    ${nearest.map(n => `
+                                        <div onclick="showDetail('${n.doc.id}')" class="flex justify-between items-center bg-white border border-slate-200 rounded-xl p-3 cursor-pointer hover:border-[var(--primary-blue)] hover:shadow-md transition-all active:scale-[0.98]">
+                                            <div class="overflow-hidden pr-2">
+                                                <h4 class="text-sm font-bold text-slate-700 leading-tight mb-0.5 truncate">${n.doc.name}</h4>
+                                                <div class="text-[10px] text-slate-500 font-medium truncate"><i class="ph-fill ph-stethoscope"></i> ${n.doc.specialization || 'General'}</div>
+                                            </div>
+                                            <div class="text-[10px] font-black text-blue-700 bg-blue-50 px-2.5 py-1.5 rounded-lg shrink-0 text-center border border-blue-100 shadow-sm min-w-[50px]">
+                                                ${n.distance < 1 ? Math.round(n.distance * 1000) + ' m' : n.distance.toFixed(1) + ' km'}
+                                            </div>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            </div>
+                        `;
+                    }
+                    return '';
+                })()}
 
                 ${doc.phone ? `
                 <a href="tel:${doc.phone}"
@@ -952,6 +1011,47 @@ function haversine(lat1, lon1, lat2, lon2) {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+function getNearestDoctors(targetDoc, limit = 3) {
+    let targetLat = null;
+    let targetLon = null;
+    
+    // Find target's valid coordinates (prioritizing primary)
+    let targetLoc = null;
+    if (targetDoc.locations && targetDoc.locations.length > 0) {
+        targetLoc = targetDoc.locations.find(l => l.is_primary && l.lat && l.lon) || targetDoc.locations.find(l => l.lat && l.lon);
+    }
+    
+    if (targetLoc && !targetDoc.is_approximate && !targetDoc._isApproximate) {
+        targetLat = parseFloat(targetLoc.lat);
+        targetLon = parseFloat(targetLoc.lon);
+    }
+    
+    if (isNaN(targetLat) || isNaN(targetLon) || targetLat === null) return [];
+    
+    let distances = [];
+    doctorsData.forEach(d => {
+        if (d.id === targetDoc.id) return;
+        if (d.is_approximate || d._isApproximate) return; // Only use exact locations to prevent clustering at center
+        
+        let loc = null;
+        if (d.locations && d.locations.length > 0) {
+            loc = d.locations.find(l => l.is_primary && l.lat && l.lon) || d.locations.find(l => l.lat && l.lon);
+        }
+        
+        if (loc && loc.lat && loc.lon) {
+            const lat = parseFloat(loc.lat);
+            const lon = parseFloat(loc.lon);
+            if (!isNaN(lat) && !isNaN(lon)) {
+                const dist = haversine(targetLat, targetLon, lat, lon);
+                distances.push({ doc: d, distance: dist });
+            }
+        }
+    });
+    
+    distances.sort((a, b) => a.distance - b.distance);
+    return distances.slice(0, limit);
+}
+
 // ── Edit Modal Deprecated ───────────────────────────────────────────────────
 
 async function archiveDoctor(id) {
@@ -1176,6 +1276,40 @@ async function submitSuggestion() {
 }
 
 // ── Log Visit (Rep) ───────────────────────────────────────────────────────────
+
+async function quickMarkVisited(id) {
+    if (!currentUserProfile) {
+        showToast('You must be logged in to log a visit.', 'error');
+        return;
+    }
+    
+    // Immediately update UI optimistically
+    const doc = doctorsData.find(d => d.id === id);
+    if (!doc) return;
+    
+    const logData = {
+        doctor_id: id,
+        rep_id: currentUserProfile.id,
+        outcome: 'Visited',
+        notes: 'Quick logged via checklist',
+        visit_date: new Date().toISOString()
+    };
+    
+    doc.activity_logs = doc.activity_logs || [];
+    doc.activity_logs.push(logData);
+    
+    // Re-render UI to show the green checkmark
+    showDetail(id);
+    renderDoctors(getFilteredDoctors());
+    
+    // Background sync
+    const { error } = await db.from('activity_logs').insert(logData);
+    if (error) {
+        showToast('Failed to sync visit log: ' + error.message, 'error');
+        console.error("Activity log error:", error);
+    }
+}
+
 function openLogVisitModal(id) {
     const doc = doctorsData.find(d => d.id === id);
     if (!doc) return;
