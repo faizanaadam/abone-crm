@@ -948,6 +948,13 @@ function setupEventListeners() {
     const closeApprovalsBtn = document.getElementById('closeApprovalsBtn');
     if (closeApprovalsBtn) closeApprovalsBtn.onclick = () => toggleApprovalsView(false);
 
+    // Admin Visit Logs View Toggle
+    const toggleVisitLogsBtn = document.getElementById('toggleVisitLogsBtn');
+    if (toggleVisitLogsBtn) toggleVisitLogsBtn.onclick = () => toggleVisitLogsView(true);
+
+    const closeVisitLogsBtn = document.getElementById('closeVisitLogsBtn');
+    if (closeVisitLogsBtn) closeVisitLogsBtn.onclick = () => toggleVisitLogsView(false);
+
     // Admin Diff Modal
     const closeDiffModalBtn = document.getElementById('closeDiffModalBtn');
     if (closeDiffModalBtn) closeDiffModalBtn.onclick = closeDiffModal;
@@ -961,17 +968,42 @@ function toggleApprovalsView(show) {
     const docList = document.getElementById('doctorList');
     const detail = document.getElementById('detail-card');
     const approvals = document.getElementById('admin-approvals-view');
+    const visitLogs = document.getElementById('admin-visit-logs-view');
 
     if (show) {
         docList.classList.add('hidden');
         detail.classList.add('hidden');
         detail.classList.remove('flex');
+        visitLogs.classList.add('hidden');
+        visitLogs.classList.remove('flex');
         approvals.classList.remove('hidden');
         approvals.classList.add('flex');
-        fetchPendingEdits(); // Refresh data when opening
+        fetchPendingEdits();
     } else {
         approvals.classList.add('hidden');
         approvals.classList.remove('flex');
+        docList.classList.remove('hidden');
+    }
+}
+
+function toggleVisitLogsView(show) {
+    const docList = document.getElementById('doctorList');
+    const detail = document.getElementById('detail-card');
+    const approvals = document.getElementById('admin-approvals-view');
+    const visitLogs = document.getElementById('admin-visit-logs-view');
+
+    if (show) {
+        docList.classList.add('hidden');
+        detail.classList.add('hidden');
+        detail.classList.remove('flex');
+        approvals.classList.add('hidden');
+        approvals.classList.remove('flex');
+        visitLogs.classList.remove('hidden');
+        visitLogs.classList.add('flex');
+        fetchVisitLogs();
+    } else {
+        visitLogs.classList.add('hidden');
+        visitLogs.classList.remove('flex');
         docList.classList.remove('hidden');
     }
 }
@@ -1509,6 +1541,78 @@ async function submitAddDoctor() {
         btnText.textContent = 'Submit for Approval';
         btnIcon.className = 'ph-bold ph-paper-plane-right';
     }, 1500);
+}
+
+// ── Admin Visit Logs ──────────────────────────────────────────────────────────
+async function fetchVisitLogs() {
+    const list = document.getElementById('admin-visit-logs-list');
+    if (list) list.innerHTML = '<div class="text-slate-400 text-center py-10 text-sm"><i class="ph ph-spinner-gap animate-spin text-2xl block mb-2"></i>Loading visit logs...</div>';
+
+    const { data, error } = await db
+        .from('activity_logs')
+        .select('*, doctors(name, specialization), profiles(first_name, last_name)')
+        .order('visit_date', { ascending: false })
+        .limit(200);
+
+    if (error) {
+        console.error('Failed to fetch visit logs:', error);
+        if (list) list.innerHTML = '<div class="text-red-500 text-center py-10 text-sm">Failed to load visit logs.</div>';
+        return;
+    }
+
+    renderVisitLogs(data || []);
+}
+
+function renderVisitLogs(logs) {
+    const list = document.getElementById('admin-visit-logs-list');
+    if (!list) return;
+
+    if (logs.length === 0) {
+        list.innerHTML = '<div class="text-slate-400 text-center py-10 text-sm">No visit logs recorded yet.</div>';
+        return;
+    }
+
+    // Group by date
+    const grouped = {};
+    logs.forEach(log => {
+        const dateKey = new Date(log.visit_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
+        if (!grouped[dateKey]) grouped[dateKey] = [];
+        grouped[dateKey].push(log);
+    });
+
+    list.innerHTML = Object.keys(grouped).map(dateKey => {
+        const dayLogs = grouped[dateKey];
+        return `
+            <div class="mb-4">
+                <div class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 px-1">${dateKey}</div>
+                <div class="space-y-2">
+                    ${dayLogs.map(log => {
+                        const docName = log.doctors ? log.doctors.name : 'Unknown Doctor';
+                        const docSpec = log.doctors ? log.doctors.specialization : '';
+                        const repName = log.profiles ? `${log.profiles.first_name || ''} ${log.profiles.last_name || ''}`.trim() : 'Unknown Rep';
+                        const time = new Date(log.visit_date).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+                        return `
+                            <div class="bg-white border border-slate-200 rounded-xl p-3.5 shadow-sm">
+                                <div class="flex justify-between items-start">
+                                    <div class="overflow-hidden pr-2">
+                                        <h4 class="text-sm font-bold text-slate-800 truncate">${docName}</h4>
+                                        <div class="text-[10px] text-slate-500 mt-0.5">${docSpec || 'General'}</div>
+                                    </div>
+                                    <div class="text-[10px] font-bold text-violet-700 bg-violet-50 px-2 py-1 rounded-lg shrink-0 border border-violet-100">${time}</div>
+                                </div>
+                                <div class="mt-2.5 flex items-center gap-1.5">
+                                    <i class="ph-fill ph-user-circle text-slate-400 text-sm"></i>
+                                    <span class="text-[11px] font-semibold text-slate-600">${repName}</span>
+                                </div>
+                                ${log.notes && log.notes !== 'Quick logged via checklist' ? `
+                                <div class="mt-2 text-[11px] text-slate-600 italic bg-slate-50 rounded-lg px-2 py-1.5 border border-slate-100">${log.notes}</div>` : ''}
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            </div>
+        `;
+    }).join('');
 }
 
 // ── Admin Pending Edits ───────────────────────────────────────────────────────

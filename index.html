@@ -150,6 +150,9 @@
                     <button onclick="downloadZoneReport()" class="flex items-center justify-center w-full bg-emerald-50 hover:bg-emerald-100 text-emerald-700 px-3 py-2 rounded-xl transition-colors text-sm font-bold gap-2">
                         <i class="ph-bold ph-download-simple text-lg"></i> Download Zone Report (CSV)
                     </button>
+                    <button id="toggleVisitLogsBtn" class="flex items-center justify-between w-full bg-violet-50 hover:bg-violet-100 text-violet-700 px-3 py-2 rounded-xl transition-colors text-sm font-bold">
+                        <span class="flex items-center gap-2"><i class="ph-fill ph-calendar-check text-lg"></i> Visit Logs</span>
+                    </button>
                 </div>
             </div>
 
@@ -185,6 +188,21 @@
                 </div>
                 <div class="flex-1 overflow-y-auto p-4 space-y-3" id="admin-approvals-list">
                     <!-- Cards injected here -->
+                </div>
+            </div>
+
+            <!-- ADMIN VISIT LOGS VIEW (hidden by default) -->
+            <div class="flex-1 flex-col overflow-hidden hidden bg-slate-50" id="admin-visit-logs-view">
+                <div class="p-4 border-b border-slate-200 bg-white shadow-sm z-10 flex justify-between items-center">
+                    <h2 class="font-bold text-slate-800 flex items-center gap-2">
+                        <i class="ph-fill ph-calendar-check text-violet-600 text-xl"></i> Visit Logs
+                    </h2>
+                    <button id="closeVisitLogsBtn" class="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100 transition-colors">
+                        <i class="ph ph-x text-lg"></i>
+                    </button>
+                </div>
+                <div class="flex-1 overflow-y-auto p-4 space-y-3" id="admin-visit-logs-list">
+                    <!-- Visit log cards injected here -->
                 </div>
             </div>
         </aside>
