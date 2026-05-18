@@ -7,6 +7,7 @@ const db = window.supabase.createClient(supabaseUrl, supabaseKey);
 let map, markerCluster;
 let doctorsData = [];
 let zonesData = [];
+let zoneGeoJSON = null;
 let markersMap = new Map();   // id → leaflet marker
 let polygonsMap = new Map();   // zone_id → leaflet polygon
 let activeDoctorId = null;
@@ -14,6 +15,7 @@ let activeZone = 'all';
 let activeSpec = 'all';
 let currentUserProfile = null;
 let pendingEditsData = [];
+let misplacedDoctors = [];
 let currentEditId = null;
 let focusModeActive = false;
 
@@ -170,7 +172,7 @@ async function fetchZones() {
     if (error) { console.error(error); return; }
     zonesData = data;
     renderZoneFilters();
-    drawZonePolygons();
+    await drawZonePolygons();
 }
 
 async function fetchDoctors() {
@@ -336,17 +338,29 @@ function setSpecFilter(spec) {
 }
 
 // ── Draw Polygons ─────────────────────────────────────────────────────────────
-function drawZonePolygons() {
-    zonesData.forEach((zone, i) => {
-        if (!zone.polygon_coords || !zone.polygon_coords.length) return;
-        const color = ZONE_COLORS[i % ZONE_COLORS.length];
-        const poly = L.polygon(zone.polygon_coords, {
-            color, fillColor: color, fillOpacity: 0.08, weight: 2, opacity: 0.7
-        }).addTo(map);
-        poly.bindTooltip(`<b>Zone ${zone.id}:</b> ${zone.name}`, { sticky: true });
-        poly.on('click', () => setZoneFilter(zone.id));
-        polygonsMap.set(zone.id, poly);
-    });
+async function drawZonePolygons() {
+    try {
+        const response = await fetch('bangalore_zones.geojson');
+        zoneGeoJSON = await response.json();
+    } catch (e) {
+        console.error('Error loading geojson:', e);
+        return;
+    }
+
+    L.geoJSON(zoneGeoJSON, {
+        style: function (feature) {
+            const zId = feature.properties.zone_id;
+            const color = ZONE_COLORS[zId % ZONE_COLORS.length];
+            return { color: color, fillColor: 'transparent', fillOpacity: 0, weight: 3, opacity: 0.9 };
+        },
+        onEachFeature: function (feature, layer) {
+            const zId = feature.properties.zone_id;
+            const name = feature.properties.name;
+            layer.bindTooltip(`<b>Zone ${zId}:</b> ${name}`, { sticky: true });
+            layer.on('click', () => setZoneFilter(zId));
+            polygonsMap.set(zId, layer);
+        }
+    }).addTo(map);
 }
 
 // ── Marker icon ───────────────────────────────────────────────────────────────
@@ -369,10 +383,10 @@ function getNavUrl(doc) {
         return primaryLoc.map_link;
     }
     // Priority 2: precise coordinates (Blue Pin)
-    if (!doc.is_approximate && primaryLoc.lat && primaryLoc.lon) {
+    if (!doc._isApproximate && !doc._isMisplaced && primaryLoc.lat && primaryLoc.lon) {
         return `https://www.google.com/maps/search/?api=1&query=${primaryLoc.lat},${primaryLoc.lon}`;
     }
-    // Priority 3: approximate (Grey Circle) — search by name + area
+    // Priority 3: approximate or misplaced (Orange/Red) — search by name + area
     const clinicPart = encodeURIComponent((primaryLoc.hospital_name || doc.name || '').trim());
     return `https://www.google.com/maps/search/?api=1&query=${clinicPart}+Bangalore`;
 }
@@ -383,6 +397,7 @@ function renderDoctors(docs) {
     list.innerHTML = '';
     markerCluster.clearLayers();
     markersMap.clear();
+    misplacedDoctors = [];
 
     document.getElementById('doctorCount').textContent = `${docs.length} doctors`;
 
@@ -457,6 +472,7 @@ function addMarker(doc) {
     let lon = null;
     let primaryLoc = null;
     let isApproximate = false;
+    let isMisplaced = false;
 
     if (doc.locations && doc.locations.length > 0) {
         primaryLoc = doc.locations.find(l => l.is_primary) || doc.locations[0];
@@ -469,56 +485,69 @@ function addMarker(doc) {
     if (isNaN(lat)) lat = null;
     if (isNaN(lon)) lon = null;
 
-    // Validate coordinates are within Bangalore bounds
-    if (lat !== null && lon !== null) {
-        if (lat < 12.7 || lat > 13.25 || lon < 77.3 || lon > 77.85) {
-            lat = null;
+    const zoneId = primaryLoc ? primaryLoc.zone_id : null;
+    let zoneCenterLat = null;
+    let zoneCenterLng = null;
+    let zonePolyFeature = null;
+
+    if (zoneId && zoneGeoJSON) {
+        const feature = zoneGeoJSON.features.find(f => f.properties.zone_id == zoneId);
+        if (feature) {
+            zonePolyFeature = feature;
+            zoneCenterLat = feature.properties.center_lat;
+            zoneCenterLng = feature.properties.center_lng;
+        }
+    }
+
+    // Step 3: Enforced Point-in-Polygon Containment Logic
+    if (lat !== null && lon !== null && zonePolyFeature && typeof turf !== 'undefined') {
+        const point = turf.point([lon, lat]);
+        const isInside = turf.booleanPointInPolygon(point, zonePolyFeature);
+        
+        if (!isInside) {
+            isMisplaced = true;
+            lat = null; // force fallback
             lon = null;
         }
     }
 
     // ── FALLBACK: Use zone center if no valid coordinates ──
     if (lat === null || lon === null) {
-        const zoneId = primaryLoc ? primaryLoc.zone_id : null;
-        if (zoneId) {
+        if (zoneCenterLat !== null && zoneCenterLng !== null) {
+            lat = zoneCenterLat;
+            lon = zoneCenterLng;
+            if (!isMisplaced) isApproximate = true;
+        } else if (zoneId) {
+            // fallback to older logic if geojson center is missing
             const zone = zonesData.find(z => z.id == zoneId);
-            if (zone) {
-                let cLat = null, cLng = null;
-
-                // Priority 1: Use DB-stored center if available
-                if (zone.center_lat && zone.center_lng) {
-                    cLat = parseFloat(zone.center_lat);
-                    cLng = parseFloat(zone.center_lng);
-                }
-                // Priority 2: Compute centroid from polygon_coords
-                else if (zone.polygon_coords && zone.polygon_coords.length > 0) {
-                    let sumLat = 0, sumLng = 0;
-                    zone.polygon_coords.forEach(coord => {
-                        sumLat += coord[0];
-                        sumLng += coord[1];
-                    });
-                    cLat = sumLat / zone.polygon_coords.length;
-                    cLng = sumLng / zone.polygon_coords.length;
-                }
-
-                if (cLat && cLng) {
-                    lat = cLat;
-                    lon = cLng;
-                    isApproximate = true;
-
-                    // Step 4: Jitter — offset by ±0.001 to prevent pin stacking
-                    lat += (Math.random() - 0.5) * 0.002;
-                    lon += (Math.random() - 0.5) * 0.002;
-                }
+            if (zone && zone.center_lat && zone.center_lng) {
+                lat = parseFloat(zone.center_lat);
+                lon = parseFloat(zone.center_lng);
+                if (!isMisplaced) isApproximate = true;
             }
         }
     }
 
-    // Tag the doc object so detail view & navigate can check it
+    // Step 4: Jitter — offset by ±0.001 to prevent pin stacking
+    if (isApproximate || isMisplaced) {
+        if (lat !== null && lon !== null) {
+            lat += (Math.random() - 0.5) * 0.002;
+            lon += (Math.random() - 0.5) * 0.002;
+        }
+    }
+
     doc._isApproximate = isApproximate;
+    doc._isMisplaced = isMisplaced;
+
+    if (isMisplaced) {
+        misplacedDoctors.push(doc);
+        renderMisplacedList(); // update admin UI
+    }
 
     if (lat !== null && lon !== null) {
-        const specClass = isApproximate ? 'spec-approximate' : getSpecClass(doc);
+        let specClass = getSpecClass(doc);
+        if (isMisplaced) specClass = 'spec-misplaced';
+        else if (isApproximate) specClass = 'spec-approximate';
         
         let extraClass = '';
         if (focusModeActive) {
@@ -540,14 +569,20 @@ function addMarker(doc) {
 
         const icon = L.divIcon({
             className: `custom-marker ${specClass} ${extraClass}`,
-            iconSize: isApproximate ? [20, 20] : [30, 42],
-            iconAnchor: isApproximate ? [10, 10] : [15, 42],
+            iconSize: (isApproximate || isMisplaced) ? [20, 20] : [30, 42],
+            iconAnchor: (isApproximate || isMisplaced) ? [10, 10] : [15, 42],
             html: `<div class="marker-pin"></div>`
         });
         const marker = L.marker([lat, lon], { icon });
-        const tooltipText = isApproximate 
-            ? `<b>${doc.name}</b><br><span style="color:#ea580c;font-size:10px;">⚠ Approximate Location</span><br><span style="font-size:9px;color:#64748b;">Double-tap → Google Maps</span>`
-            : `<b>${doc.name}</b><br><span style="font-size:9px;color:#64748b;">Double-tap → Google Maps</span>`;
+        
+        let tooltipText = `<b>${doc.name}</b>`;
+        if (isMisplaced) {
+            tooltipText += `<br><span style="color:#ef4444;font-size:10px;font-weight:bold;">⚠ ALERT: Misplaced GPS Data.<br>Forced to Zone Center.</span>`;
+        } else if (isApproximate) {
+            tooltipText += `<br><span style="color:#ea580c;font-size:10px;">⚠ Approximate Location</span>`;
+        }
+        tooltipText += `<br><span style="font-size:9px;color:#64748b;">Double-tap → Google Maps</span>`;
+
         marker.bindTooltip(tooltipText);
         marker.on('click', () => showDetail(doc.id));
         marker.on('dblclick', () => {
@@ -623,12 +658,21 @@ function showDetail(id) {
 
     if (isMobile()) setSheetState('half');
 
-    const isApprox = doc.is_approximate || doc._isApproximate;
-    const approxWarning = isApprox ? `
+    const isApprox = doc.is_approximate || doc._isApproximate || doc._isMisplaced;
+    let approxWarning = '';
+    if (doc._isMisplaced) {
+        approxWarning = `
+        <div class="flex items-start gap-2 bg-red-50 border border-red-200 rounded-xl p-3 mb-4">
+            <span class="text-lg">⚠</span>
+            <p class="text-xs text-red-700 font-bold">Misplaced GPS Data — Forced to Zone Center. Navigation will search by name instead of broken coordinates.</p>
+        </div>`;
+    } else if (doc.is_approximate || doc._isApproximate) {
+        approxWarning = `
         <div class="flex items-start gap-2 bg-orange-50 border border-orange-200 rounded-xl p-3 mb-4">
             <span class="text-lg">📍</span>
             <p class="text-xs text-orange-700 font-medium">Approximate Location — Check Address Details. Navigation will search by name instead of coordinates.</p>
-        </div>` : '';
+        </div>`;
+    }
 
     const navUrl = getNavUrl(doc);
 
@@ -682,7 +726,7 @@ function showDetail(id) {
         const clinicPart = encodeURIComponent((loc.hospital_name || doc.name || '').trim());
         const locNavUrl = (loc.map_link && loc.map_link.startsWith('http'))
             ? loc.map_link
-            : (loc.lat && loc.lon && !doc.is_approximate && !doc._isApproximate)
+            : (loc.lat && loc.lon && !doc.is_approximate && !doc._isApproximate && !doc._isMisplaced)
                 ? `https://www.google.com/maps/search/?api=1&query=${loc.lat},${loc.lon}`
                 : `https://www.google.com/maps/search/?api=1&query=${clinicPart}+Bangalore`;
 
@@ -955,6 +999,13 @@ function setupEventListeners() {
     const closeVisitLogsBtn = document.getElementById('closeVisitLogsBtn');
     if (closeVisitLogsBtn) closeVisitLogsBtn.onclick = () => toggleVisitLogsView(false);
 
+    // Admin Misplaced View Toggle
+    const toggleMisplacedBtn = document.getElementById('toggleMisplacedBtn');
+    if (toggleMisplacedBtn) toggleMisplacedBtn.onclick = () => toggleMisplacedView(true);
+
+    const closeMisplacedBtn = document.getElementById('closeMisplacedBtn');
+    if (closeMisplacedBtn) closeMisplacedBtn.onclick = () => toggleMisplacedView(false);
+
     // Admin Diff Modal
     const closeDiffModalBtn = document.getElementById('closeDiffModalBtn');
     if (closeDiffModalBtn) closeDiffModalBtn.onclick = closeDiffModal;
@@ -969,6 +1020,7 @@ function toggleApprovalsView(show) {
     const detail = document.getElementById('detail-card');
     const approvals = document.getElementById('admin-approvals-view');
     const visitLogs = document.getElementById('admin-visit-logs-view');
+    const misplaced = document.getElementById('admin-misplaced-view');
 
     if (show) {
         docList.classList.add('hidden');
@@ -976,6 +1028,7 @@ function toggleApprovalsView(show) {
         detail.classList.remove('flex');
         visitLogs.classList.add('hidden');
         visitLogs.classList.remove('flex');
+        if(misplaced) { misplaced.classList.add('hidden'); misplaced.classList.remove('flex'); }
         approvals.classList.remove('hidden');
         approvals.classList.add('flex');
         fetchPendingEdits();
@@ -991,6 +1044,7 @@ function toggleVisitLogsView(show) {
     const detail = document.getElementById('detail-card');
     const approvals = document.getElementById('admin-approvals-view');
     const visitLogs = document.getElementById('admin-visit-logs-view');
+    const misplaced = document.getElementById('admin-misplaced-view');
 
     if (show) {
         docList.classList.add('hidden');
@@ -998,6 +1052,7 @@ function toggleVisitLogsView(show) {
         detail.classList.remove('flex');
         approvals.classList.add('hidden');
         approvals.classList.remove('flex');
+        if(misplaced) { misplaced.classList.add('hidden'); misplaced.classList.remove('flex'); }
         visitLogs.classList.remove('hidden');
         visitLogs.classList.add('flex');
         fetchVisitLogs();
@@ -1006,6 +1061,66 @@ function toggleVisitLogsView(show) {
         visitLogs.classList.remove('flex');
         docList.classList.remove('hidden');
     }
+}
+
+function toggleMisplacedView(show) {
+    const docList = document.getElementById('doctorList');
+    const detail = document.getElementById('detail-card');
+    const approvals = document.getElementById('admin-approvals-view');
+    const visitLogs = document.getElementById('admin-visit-logs-view');
+    const misplaced = document.getElementById('admin-misplaced-view');
+
+    if (show) {
+        docList.classList.add('hidden');
+        detail.classList.add('hidden');
+        detail.classList.remove('flex');
+        approvals.classList.add('hidden');
+        approvals.classList.remove('flex');
+        visitLogs.classList.add('hidden');
+        visitLogs.classList.remove('flex');
+        misplaced.classList.remove('hidden');
+        misplaced.classList.add('flex');
+    } else {
+        misplaced.classList.add('hidden');
+        misplaced.classList.remove('flex');
+        docList.classList.remove('hidden');
+    }
+}
+
+function renderMisplacedList() {
+    const badge = document.getElementById('misplacedBadge');
+    const list = document.getElementById('admin-misplaced-list');
+    if (!badge || !list) return;
+
+    if (misplacedDoctors.length > 0) {
+        badge.textContent = misplacedDoctors.length;
+        badge.classList.remove('hidden');
+    } else {
+        badge.classList.add('hidden');
+    }
+
+    if (misplacedDoctors.length === 0) {
+        list.innerHTML = '<div class="text-slate-400 text-center py-10 text-sm">No location errors found.</div>';
+        return;
+    }
+
+    list.innerHTML = misplacedDoctors.map(doc => {
+        const primaryLoc = doc.locations && (doc.locations.find(l => l.is_primary) || doc.locations[0]);
+        const assignedZone = zonesData.find(z => z.id == (primaryLoc ? primaryLoc.zone_id : null));
+        return `
+            <div class="bg-white p-4 rounded-2xl shadow-sm border border-red-100 border-l-4 border-l-red-500 mb-3 flex flex-col cursor-pointer hover:bg-slate-50 transition-colors" onclick="showDetail(${doc.id}); toggleMisplacedView(false);">
+                <div class="flex justify-between items-start">
+                    <h4 class="font-bold text-slate-800 text-sm">${doc.name}</h4>
+                    <span class="bg-red-50 text-red-600 text-[9px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">Misplaced</span>
+                </div>
+                <div class="text-xs text-slate-500 mt-1"><i class="ph-fill ph-hospital text-slate-400"></i> ${primaryLoc ? primaryLoc.hospital_name : 'No Hospital'}</div>
+                <div class="text-xs text-red-600 mt-2 font-medium bg-red-50 p-2 rounded flex items-start gap-1">
+                    <i class="ph-fill ph-warning-circle mt-0.5"></i>
+                    <span>GPS data falls outside assigned zone (${assignedZone ? assignedZone.name : 'Unknown'}). Forced to zone center.</span>
+                </div>
+            </div>
+        `;
+    }).join('');
 }
 
 // ── Near Me ───────────────────────────────────────────────────────────────────
