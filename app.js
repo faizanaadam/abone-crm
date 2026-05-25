@@ -584,15 +584,188 @@ function addMarker(doc) {
         tooltipText += `<br><span style="font-size:9px;color:#64748b;">Double-tap → Google Maps</span>`;
 
         marker.bindTooltip(tooltipText);
+        
+        // Step 1: Draggable Mode Popup
+        const popupContent = `
+            <div class="text-center min-w-[140px] p-1">
+                <b class="text-[13px] text-slate-800 block mb-2 leading-tight">${doc.name}</b>
+                <button onclick="enableMarkerDrag('${doc.id}', this)" class="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 px-3 py-1.5 rounded-lg text-xs font-bold border border-indigo-200 shadow-sm active:scale-95 transition-all w-full flex items-center justify-center gap-1.5">
+                    <i class="ph-bold ph-arrows-out-cardinal"></i> Edit Location
+                </button>
+            </div>
+        `;
+        marker.bindPopup(popupContent);
+
         marker.on('click', () => showDetail(doc.id));
         marker.on('dblclick', () => {
             const navUrl = getNavUrl(doc);
             window.open(navUrl, '_blank');
         });
+        
+        // Step 2: Handle the dragend Event
+        marker.on('dragend', (e) => {
+            const newLat = e.target.getLatLng().lat;
+            const newLng = e.target.getLatLng().lng;
+            
+            let newZoneId = null;
+            let newZoneName = 'Outside Supported Area';
+
+            // Loop through Turf polygons to find exact zone match
+            if (zoneGeoJSON && typeof turf !== 'undefined') {
+                const dropPoint = turf.point([newLng, newLat]);
+                for (const feature of zoneGeoJSON.features) {
+                    if (turf.booleanPointInPolygon(dropPoint, feature)) {
+                        newZoneId = feature.properties.zone_id;
+                        // Use name from properties or zonesData lookup
+                        const matchedZone = zonesData.find(z => z.id == newZoneId);
+                        newZoneName = matchedZone ? matchedZone.name : (feature.properties.name || 'Unknown Zone');
+                        break;
+                    }
+                }
+            }
+            
+            // Pass to Step 3 Handler
+            if (typeof showDragConfirmation === 'function') {
+                showDragConfirmation(doc, newLat, newLng, newZoneId, newZoneName);
+            } else {
+                console.log("Drag ended:", {newLat, newLng, newZoneId, newZoneName});
+            }
+        });
+
         markerCluster.addLayer(marker);
         markersMap.set(doc.id, marker);
     }
 }
+
+// ── Drag & Drop Calibration (Steps 1 & 3) ──────────────────────────────────
+window.enableMarkerDrag = function(id, btn) {
+    const marker = markersMap.get(id);
+    if (marker) {
+        marker.dragging.enable();
+        
+        // Update button UI
+        btn.innerHTML = `<i class="ph-bold ph-arrows-out-cardinal"></i> Dragging Enabled...`;
+        btn.className = "bg-emerald-50 text-emerald-700 px-3 py-1.5 rounded-lg text-xs font-bold border border-emerald-200 shadow-sm w-full flex items-center justify-center gap-1.5";
+        
+        // Add visual pulsing indicator to the marker
+        const iconEl = marker.getElement();
+        if (iconEl) {
+            iconEl.classList.add('marker-blinking'); // Reusing the blinking class for visual feedback
+        }
+    }
+};
+
+window.showDragConfirmation = function(doc, newLat, newLng, newZoneId, newZoneName) {
+    const marker = markersMap.get(doc.id);
+    if (!marker) return;
+    
+    // Step 3: Create the confirmation UI HTML
+    const confirmHtml = `
+        <div class="text-center min-w-[220px] p-1.5">
+            <h4 class="font-black text-slate-800 text-[14px] mb-2.5 border-b border-slate-100 pb-1.5 flex items-center justify-center gap-1.5">
+                <i class="ph-fill ph-target text-blue-600"></i> Confirm Location
+            </h4>
+            
+            <div class="text-left bg-slate-50 p-2.5 rounded-xl mb-3.5 border border-slate-200 shadow-inner">
+                <div class="text-[9px] text-slate-400 font-black uppercase tracking-widest mb-1">Detected Zone</div>
+                <div class="text-xs font-bold text-slate-800 mb-2.5 flex items-start gap-1.5 leading-tight">
+                    <i class="ph-fill ph-map-pin text-blue-500 mt-0.5"></i> ${newZoneName}
+                </div>
+                
+                <div class="text-[9px] text-slate-400 font-black uppercase tracking-widest mb-1">New Coordinates</div>
+                <div class="text-[11px] font-mono font-bold text-slate-600 bg-white border border-slate-100 px-2 py-1 rounded-md inline-block w-full text-center">
+                    ${newLat.toFixed(5)}, ${newLng.toFixed(5)}
+                </div>
+            </div>
+            
+            <button onclick="saveNewLocation('${doc.id}', ${newLat}, ${newLng}, ${newZoneId})" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-xl text-[13px] font-black shadow-md active:scale-95 transition-all w-full flex items-center justify-center gap-2 mb-2">
+                <i class="ph-bold ph-floppy-disk text-lg"></i> Save Location
+            </button>
+            
+            <button onclick="cancelMarkerDrag('${doc.id}')" class="text-[11px] text-slate-400 hover:text-slate-700 underline font-bold transition-colors">Cancel & Reset</button>
+        </div>
+    `;
+    
+    // Bind the new HTML to the popup and open it automatically
+    marker.bindPopup(confirmHtml, { closeOnClick: false, autoClose: false }).openPopup();
+};
+
+window.cancelMarkerDrag = function(id) {
+    // Reset the map to clear the dragged state
+    renderDoctors(getFilteredDoctors());
+};
+
+window.saveNewLocation = async function(docId, newLat, newLng, newZoneId) {
+    if (!currentUserProfile) return;
+    
+    const marker = markersMap.get(docId);
+    if (marker) {
+        marker.closePopup();
+        marker.dragging.disable();
+    }
+
+    const doc = doctorsData.find(d => d.id === docId);
+    if (!doc) return;
+
+    const primaryLoc = doc.locations && (doc.locations.find(l => l.is_primary) || doc.locations[0]);
+    const locId = primaryLoc ? primaryLoc.id : null;
+    const isRep = currentUserProfile.role === 'rep';
+
+    if (isRep) {
+        // Rep: Package into pending_edits
+        const newData = {};
+        if (locId) {
+            newData.locations = [{
+                id: locId,
+                lat: newLat,
+                lon: newLng,
+                zone_id: newZoneId
+            }];
+        }
+        
+        const { error } = await db.from('pending_edits').insert({
+            doctor_id: docId,
+            suggested_by: currentUserProfile.id,
+            new_data: newData,
+            status: 'pending'
+        });
+
+        if (error) {
+            alert('Submission failed: ' + error.message);
+            renderDoctors(getFilteredDoctors()); // Reset marker
+        } else {
+            alert('Location update submitted for admin approval.');
+            renderDoctors(getFilteredDoctors()); // Reset marker locally until approved
+        }
+    } else {
+        // Admin: Direct Update
+        let errorObj = null;
+        if (locId) {
+            const { error } = await db.from('locations').update({
+                lat: newLat,
+                lon: newLng,
+                zone_id: newZoneId
+            }).eq('id', locId);
+            errorObj = error;
+        }
+
+        // Failsafe: also update doctors table if it exists there
+        const { error: docError } = await db.from('doctors').update({
+            zone_id: newZoneId
+        }).eq('id', docId);
+        
+        if (!errorObj && docError) errorObj = docError;
+
+        if (errorObj) {
+            alert('Update failed: ' + errorObj.message);
+            renderDoctors(getFilteredDoctors()); // Reset marker
+        } else {
+            alert('Location successfully calibrated and saved!');
+            // Refresh data from DB to reflect the new state perfectly
+            await fetchDoctors();
+        }
+    }
+};
 
 function createDoctorCard(doc) {
     const primaryLoc = doc.locations && (doc.locations.find(l => l.is_primary) || doc.locations[0]);
