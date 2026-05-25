@@ -383,7 +383,8 @@ function getNavUrl(doc) {
         return primaryLoc.map_link;
     }
     // Priority 2: precise coordinates (Blue Pin)
-    if (!doc._isApproximate && !doc._isMisplaced && primaryLoc.lat && primaryLoc.lon) {
+    // Must not be marked approximate in DB or via missing coordinate fallback
+    if (!doc.is_approximate && !doc._isApproximate && !doc._isMisplaced && primaryLoc.lat && primaryLoc.lon) {
         return `https://www.google.com/maps/search/?api=1&query=${primaryLoc.lat},${primaryLoc.lon}`;
     }
     // Priority 3: approximate or misplaced (Orange/Red) — search by name + area
@@ -471,7 +472,7 @@ function addMarker(doc) {
     let lat = null;
     let lon = null;
     let primaryLoc = null;
-    let isApproximate = false;
+    let isApproximate = doc.is_approximate === true; // Inherit DB flag
     let isMisplaced = false;
 
     if (doc.locations && doc.locations.length > 0) {
@@ -484,6 +485,11 @@ function addMarker(doc) {
 
     if (isNaN(lat)) lat = null;
     if (isNaN(lon)) lon = null;
+
+    // Catch hardcoded dummy coordinates from bulk uploads
+    if (lat !== null && lon !== null && Math.abs(lat - 12.8963) < 0.01 && Math.abs(lon - 77.5982) < 0.01) {
+        isApproximate = true;
+    }
 
     const zoneId = primaryLoc ? primaryLoc.zone_id : null;
     let zoneCenterLat = null;
@@ -602,56 +608,107 @@ function addMarker(doc) {
             window.open(navUrl, '_blank');
         });
         
-        // Step 2: Handle the dragend Event
-        marker.on('dragend', (e) => {
-            const newLat = e.target.getLatLng().lat;
-            const newLng = e.target.getLatLng().lng;
-            
-            let newZoneId = null;
-            let newZoneName = 'Outside Supported Area';
-
-            // Loop through Turf polygons to find exact zone match
-            if (zoneGeoJSON && typeof turf !== 'undefined') {
-                const dropPoint = turf.point([newLng, newLat]);
-                for (const feature of zoneGeoJSON.features) {
-                    if (turf.booleanPointInPolygon(dropPoint, feature)) {
-                        newZoneId = feature.properties.zone_id;
-                        // Use name from properties or zonesData lookup
-                        const matchedZone = zonesData.find(z => z.id == newZoneId);
-                        newZoneName = matchedZone ? matchedZone.name : (feature.properties.name || 'Unknown Zone');
-                        break;
-                    }
-                }
-            }
-            
-            // Pass to Step 3 Handler
-            if (typeof showDragConfirmation === 'function') {
-                showDragConfirmation(doc, newLat, newLng, newZoneId, newZoneName);
-            } else {
-                console.log("Drag ended:", {newLat, newLng, newZoneId, newZoneName});
-            }
-        });
+        // Note: Marker dragging has been replaced by center-screen map panning.
+        // The old 'dragend' listener is removed.
 
         markerCluster.addLayer(marker);
         markersMap.set(doc.id, marker);
     }
 }
 
-// ── Drag & Drop Calibration (Steps 1 & 3) ──────────────────────────────────
+// ── Map Panning Location Edit UX (Steps 1 & 2) ───────────────────────────
+window.activeEditDocId = null;
+
 window.enableMarkerDrag = function(id, btn) {
+    // Repurposed: Now triggers the Map Panning Edit Mode instead of draggable markers
+    window.activeEditDocId = id;
     const marker = markersMap.get(id);
-    if (marker) {
-        marker.dragging.enable();
-        
-        // Update button UI
-        btn.innerHTML = `<i class="ph-bold ph-arrows-out-cardinal"></i> Dragging Enabled...`;
-        btn.className = "bg-emerald-50 text-emerald-700 px-3 py-1.5 rounded-lg text-xs font-bold border border-emerald-200 shadow-sm w-full flex items-center justify-center gap-1.5";
-        
-        // Add visual pulsing indicator to the marker
-        const iconEl = marker.getElement();
-        if (iconEl) {
-            iconEl.classList.add('marker-blinking'); // Reusing the blinking class for visual feedback
+    const doc = doctorsData.find(d => d.id === id);
+    if (!marker || !doc) return;
+    
+    // 1. Clear UI
+    marker.closePopup();
+    
+    // We keep the detailCard open so the user knows who they are editing!
+    // (Removed code that hid detail-card)
+    
+    // 2. Fade out existing pins to remove clutter
+    const markerPane = document.querySelector('.leaflet-marker-pane');
+    if (markerPane) {
+        markerPane.style.opacity = '0.3';
+        markerPane.style.pointerEvents = 'none';
+        markerPane.style.transition = 'opacity 0.3s ease';
+    }
+    
+    // 3. Fly exactly to the current coordinates
+    const primaryLoc = doc.locations && (doc.locations.find(l => l.is_primary) || doc.locations[0]);
+    if (primaryLoc && primaryLoc.lat && primaryLoc.lon) {
+        map.flyTo([primaryLoc.lat, primaryLoc.lon], 16, { animate: true, duration: 0.6 });
+    }
+    
+    // 4. Show the Map Panning UI (Crosshair and floating Action Bar)
+    const crosshair = document.getElementById('mapCenterCrosshair');
+    const actionBar = document.getElementById('editModeActionBar');
+    if (crosshair && actionBar) {
+        crosshair.classList.remove('hidden');
+        actionBar.classList.remove('hidden');
+        actionBar.classList.add('flex');
+    }
+};
+
+window.cancelEditMode = function() {
+    window.activeEditDocId = null;
+    
+    // Restore markers
+    const markerPane = document.querySelector('.leaflet-marker-pane');
+    if (markerPane) {
+        markerPane.style.opacity = '1';
+        markerPane.style.pointerEvents = 'auto';
+    }
+    
+    // Hide Edit UI
+    const crosshair = document.getElementById('mapCenterCrosshair');
+    const actionBar = document.getElementById('editModeActionBar');
+    if (crosshair && actionBar) {
+        crosshair.classList.add('hidden');
+        actionBar.classList.add('hidden');
+        actionBar.classList.remove('flex');
+    }
+};
+
+window.confirmCenterLocation = function() {
+    if (!window.activeEditDocId) return;
+    const docId = window.activeEditDocId;
+    const doc = doctorsData.find(d => d.id === docId);
+    if (!doc) return;
+
+    // 1. Get the exact coordinates of the center crosshair
+    const center = map.getCenter();
+    const newLat = center.lat;
+    const newLng = center.lng;
+
+    // 2. Perform Turf.js Spatial Math
+    let newZoneId = null;
+    let newZoneName = 'Outside Supported Area';
+
+    if (zoneGeoJSON && typeof turf !== 'undefined') {
+        const dropPoint = turf.point([newLng, newLat]);
+        for (const feature of zoneGeoJSON.features) {
+            if (turf.booleanPointInPolygon(dropPoint, feature)) {
+                newZoneId = feature.properties.zone_id;
+                const matchedZone = zonesData.find(z => z.id == newZoneId);
+                newZoneName = matchedZone ? matchedZone.name : (feature.properties.name || 'Unknown Zone');
+                break;
+            }
         }
+    }
+
+    // 3. Exit Edit Mode UI
+    cancelEditMode();
+
+    // 4. Trigger the final confirmation popup on the marker
+    if (typeof showDragConfirmation === 'function') {
+        showDragConfirmation(doc, newLat, newLng, newZoneId, newZoneName);
     }
 };
 
@@ -748,13 +805,6 @@ window.saveNewLocation = async function(docId, newLat, newLng, newZoneId) {
             }).eq('id', locId);
             errorObj = error;
         }
-
-        // Failsafe: also update doctors table if it exists there
-        const { error: docError } = await db.from('doctors').update({
-            zone_id: newZoneId
-        }).eq('id', docId);
-        
-        if (!errorObj && docError) errorObj = docError;
 
         if (errorObj) {
             alert('Update failed: ' + errorObj.message);
@@ -1405,6 +1455,7 @@ function openSuggestEditModal(id) {
     const doc = doctorsData.find(d => d.id === id);
     if (!doc) return;
     document.getElementById('suggestDocId').value = doc.id;
+    if (document.getElementById('suggestDocName')) document.getElementById('suggestDocName').value = doc.name || '';
     document.getElementById('suggestAboneUsage').value = (doc.abone_usage_percentage !== null && doc.abone_usage_percentage !== undefined) ? doc.abone_usage_percentage : '';
     document.getElementById('suggestPhone').value = doc.phone || '';
     document.getElementById('suggestEmail').value = doc.email || '';
@@ -1478,6 +1529,7 @@ async function submitSuggestion() {
     const doc = doctorsData.find(d => d.id === id);
     if (!doc) return;
 
+    const newName = document.getElementById('suggestDocName') ? document.getElementById('suggestDocName').value : '';
     const usage = document.getElementById('suggestAboneUsage').value;
     const phone = document.getElementById('suggestPhone') ? document.getElementById('suggestPhone').value : '';
     const email = document.getElementById('suggestEmail') ? document.getElementById('suggestEmail').value : '';
@@ -1490,6 +1542,7 @@ async function submitSuggestion() {
     btnIcon.className = 'ph-bold ph-spinner-gap animate-spin';
 
     const newData = {};
+    if (newName && newName !== doc.name) newData.name = newName;
     if (usage !== null && usage !== undefined && usage !== '') newData.abone_usage_percentage = parseInt(usage);
     if (phone !== (doc.phone || '')) newData.phone = phone;
     if (email !== (doc.email || '')) newData.email = email;

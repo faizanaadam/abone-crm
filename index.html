@@ -15,7 +15,7 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.4.1/dist/MarkerCluster.css" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.4.1/dist/MarkerCluster.Default.css" />
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="style.css?v=2">
     <!-- Google Fonts: Inter -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -230,6 +230,32 @@
         <main class="flex-1 relative h-screen w-full z-0">
             <div id="map" class="w-full h-full"></div>
 
+            <!-- MAP TARGET CROSSHAIR (Hidden by default, used for Edit Mode) -->
+            <div id="mapCenterCrosshair" class="hidden">
+                <div class="crosshair-outer crosshair-pulse"></div>
+                <div class="crosshair-inner">
+                    <div class="ch-dot"></div>
+                    <div class="ch-line ch-top"></div>
+                    <div class="ch-line ch-bottom"></div>
+                    <div class="ch-line ch-left"></div>
+                    <div class="ch-line ch-right"></div>
+                </div>
+            </div>
+
+            <!-- EDIT MODE ACTION BAR (Hidden by default) -->
+            <div id="editModeActionBar" class="hidden">
+                <div class="edit-action-header">
+                    <i class="ph-bold ph-arrows-out-cardinal" style="color: #4f46e5; font-size: 1.125rem;"></i>
+                    <span>Pan map to place pin</span>
+                </div>
+                <div class="edit-action-buttons">
+                    <button onclick="cancelEditMode()" class="btn-cancel">Cancel</button>
+                    <button onclick="confirmCenterLocation()" class="btn-confirm">
+                        <i class="ph-bold ph-check" style="font-size: 1.125rem;"></i> Confirm
+                    </button>
+                </div>
+            </div>
+
             <!-- FAB: Near Me -->
             <button id="nearMeBtn"
                 class="absolute bottom-20 md:bottom-6 right-4 z-[500] bg-white text-blue-600 p-3.5 rounded-full shadow-2xl hover:bg-blue-50 transition-all active:scale-95 border border-blue-100"
@@ -254,6 +280,10 @@
             </div>
             <div class="p-5 space-y-4 overflow-y-auto">
                 <input type="hidden" id="suggestDocId">
+                <div class="mb-4">
+                    <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Doctor Name</label>
+                    <input type="text" id="suggestDocName" class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-orange-500 outline-none text-sm font-bold text-slate-800" placeholder="Dr. Firstname Lastname">
+                </div>
                 <div class="bg-blue-50 border border-blue-100 p-3 rounded-xl flex items-start gap-2">
                     <i class="ph-fill ph-info text-blue-500 mt-0.5"></i>
                     <p class="text-xs text-blue-800 leading-snug">Your suggested edits will be reviewed by an administrator before they are published to the directory.</p>
@@ -486,6 +516,6 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/leaflet.markercluster@1.4.1/dist/leaflet.markercluster.js"></script>
     <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
-    <script src="app.js"></script>
+    <script src="app.js?v=2"></script>
 </body>
 </html>
