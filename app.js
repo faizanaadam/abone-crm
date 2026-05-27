@@ -1122,12 +1122,15 @@ function setupBottomSheet() {
     // SNAP POSITIONS (translateY values, sheet height = 92vh)
     // peek = only handle visible (92vh - 56px)
     // half = half screen
-    // full = fully open (10% from top)
-    const snapY = () => ({
-        peek: sheetH() - 56,
-        half: window.innerHeight * 0.5,
-        full: window.innerHeight * 0.08,
-    });
+    // full = fully open (0px translation places bottom exactly at viewport bottom)
+    const snapY = () => {
+        const sh = sheetH();
+        return {
+            peek: sh - 56,
+            half: sh - (window.innerHeight * 0.5),
+            full: 0,
+        };
+    };
 
     setSheetState = function (state) {
         if (!isMobile()) {
@@ -1145,33 +1148,41 @@ function setupBottomSheet() {
 
     let startY, startTranslate, dragging = false;
 
-    handle.addEventListener('touchstart', e => {
+    handle.addEventListener('pointerdown', e => {
         if (!isMobile()) return;
-        startY = e.touches[0].clientY;
+        handle.setPointerCapture(e.pointerId);
+        startY = e.clientY;
         const m = (sheet.style.transform || '').match(/translateY\((.+)px\)/);
         startTranslate = m ? parseFloat(m[1]) : snapY().peek;
         dragging = true;
         sheet.style.transition = 'none';
-    }, { passive: true });
+    });
 
-    handle.addEventListener('touchmove', e => {
+    handle.addEventListener('pointermove', e => {
         if (!dragging) return;
-        const delta = e.touches[0].clientY - startY;
+        const delta = e.clientY - startY;
         let newY = startTranslate + delta;
         const { full, peek } = snapY();
         newY = Math.max(full, Math.min(peek, newY));
         sheet.style.transform = `translateY(${newY}px)`;
-    }, { passive: true });
+    });
 
-    handle.addEventListener('touchend', e => {
+    handle.addEventListener('pointerup', e => {
         if (!dragging) return;
         dragging = false;
+        handle.releasePointerCapture(e.pointerId);
         const m = (sheet.style.transform || '').match(/translateY\((.+)px\)/);
         const curY = m ? parseFloat(m[1]) : snapY().half;
         const { peek, half, full } = snapY();
         if (curY < (full + half) / 2) setSheetState('full');
         else if (curY < (half + peek) / 2) setSheetState('half');
         else setSheetState('peek');
+    });
+
+    handle.addEventListener('pointercancel', e => {
+        if (!dragging) return;
+        dragging = false;
+        setSheetState(sheet._state || 'half');
     });
 
     window.addEventListener('resize', () => {
