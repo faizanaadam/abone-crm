@@ -879,7 +879,12 @@ function showDetail(id) {
     detailCard.classList.remove('hidden');
     detailCard.classList.add('flex');
 
-    if (isMobile()) setSheetState('full');
+    if (isMobile()) {
+        // Hide header & drag handle to maximize detail space
+        document.getElementById('sheetHeader').classList.add('hidden');
+        document.getElementById('dragHandle').classList.add('hidden');
+        setSheetState('full');
+    }
 
     const isApprox = doc.is_approximate || doc._isApproximate || doc._isMisplaced;
     let approxWarning = '';
@@ -1084,6 +1089,12 @@ function backToList() {
     document.getElementById('detail-card').classList.add('hidden');
     document.getElementById('detail-card').classList.remove('flex');
     document.getElementById('doctorList').classList.remove('hidden');
+
+    // Restore header & drag handle on mobile
+    if (isMobile()) {
+        document.getElementById('sheetHeader').classList.remove('hidden');
+        document.getElementById('dragHandle').classList.remove('hidden');
+    }
 
     if (activeDoctorId && markersMap.has(activeDoctorId)) {
         const m = markersMap.get(activeDoctorId);
