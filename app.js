@@ -879,7 +879,7 @@ function showDetail(id) {
     detailCard.classList.remove('hidden');
     detailCard.classList.add('flex');
 
-    if (isMobile()) setSheetState('half');
+    if (isMobile()) setSheetState('full');
 
     const isApprox = doc.is_approximate || doc._isApproximate || doc._isMisplaced;
     let approxWarning = '';
