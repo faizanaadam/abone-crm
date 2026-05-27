@@ -1088,6 +1088,7 @@ function showDetail(id) {
 function backToList() {
     document.getElementById('detail-card').classList.add('hidden');
     document.getElementById('detail-card').classList.remove('flex');
+    document.getElementById('detailContent').innerHTML = '';
     document.getElementById('doctorList').classList.remove('hidden');
 
     // Restore header & drag handle on mobile
