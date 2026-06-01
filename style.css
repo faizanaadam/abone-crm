@@ -223,6 +223,23 @@ body {
    ============================================= */
 .leaflet-control-zoom { display: none; }
 
+/* Zone labels shown during Edit Location mode */
+.zone-edit-label {
+    background: rgba(15, 23, 42, 0.7) !important;
+    color: #fff !important;
+    border: none !important;
+    border-radius: 6px !important;
+    padding: 3px 8px !important;
+    font-size: 10px !important;
+    font-weight: 700 !important;
+    letter-spacing: 0.03em;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2) !important;
+    white-space: nowrap;
+}
+.zone-edit-label::before {
+    display: none !important;
+}
+
 /* =============================================
    MAP EDIT MODE CROSSHAIR
    ============================================= */

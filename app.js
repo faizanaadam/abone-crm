@@ -654,6 +654,24 @@ window.enableMarkerDrag = function(id, btn) {
         actionBar.classList.remove('hidden');
         actionBar.classList.add('flex');
     }
+
+    // 5. Highlight zone boundaries so user can see where to place the pin
+    polygonsMap.forEach((poly, zId) => {
+        const color = ZONE_COLORS[zId % ZONE_COLORS.length];
+        poly.setStyle({ fillColor: color, fillOpacity: 0.12, weight: 4, opacity: 1 });
+        // Show persistent zone label in center
+        if (!poly._editLabel) {
+            const center = poly.getBounds().getCenter();
+            const zone = zonesData.find(z => z.id == zId);
+            const label = zone ? zone.name : `Zone ${zId}`;
+            poly._editLabel = L.tooltip({
+                permanent: true,
+                direction: 'center',
+                className: 'zone-edit-label'
+            }).setContent(`<b>${label}</b>`).setLatLng(center);
+            poly._editLabel.addTo(map);
+        }
+    });
 };
 
 window.cancelEditMode = function() {
@@ -674,6 +692,16 @@ window.cancelEditMode = function() {
         actionBar.classList.add('hidden');
         actionBar.classList.remove('flex');
     }
+
+    // Restore zone polygons to normal transparent style & remove labels
+    polygonsMap.forEach((poly, zId) => {
+        const color = ZONE_COLORS[zId % ZONE_COLORS.length];
+        poly.setStyle({ fillColor: 'transparent', fillOpacity: 0, weight: 3, opacity: 0.9 });
+        if (poly._editLabel) {
+            map.removeLayer(poly._editLabel);
+            poly._editLabel = null;
+        }
+    });
 };
 
 window.confirmCenterLocation = function() {
