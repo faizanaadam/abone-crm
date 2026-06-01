@@ -8,6 +8,9 @@ CREATE TABLE public.pending_edits (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
+-- May 2026 Supabase Security Update: Explicit Data API Grants
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.pending_edits TO anon, authenticated;
+
 -- Enable Row Level Security
 ALTER TABLE public.pending_edits ENABLE ROW LEVEL SECURITY;
 

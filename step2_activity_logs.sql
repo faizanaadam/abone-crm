@@ -11,6 +11,9 @@ CREATE TABLE IF NOT EXISTS public.activity_logs (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- May 2026 Supabase Security Update: Explicit Data API Grants
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.activity_logs TO anon, authenticated;
+
 -- Create indexes for fast querying by doctor or rep
 CREATE INDEX IF NOT EXISTS idx_activity_logs_doctor_id ON public.activity_logs(doctor_id);
 CREATE INDEX IF NOT EXISTS idx_activity_logs_rep_id ON public.activity_logs(rep_id);

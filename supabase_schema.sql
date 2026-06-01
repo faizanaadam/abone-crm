@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS profiles (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- May 2026 Supabase Security Update: Explicit Data API Grants
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE profiles TO anon, authenticated;
+
 -- 4. NEW DOCTORS TABLE (Master Info)
 CREATE TABLE doctors (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -41,6 +44,9 @@ CREATE TABLE doctors (
     is_approximate BOOLEAN DEFAULT false,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- May 2026 Supabase Security Update: Explicit Data API Grants
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE doctors TO anon, authenticated;
 
 -- 5. LOCATIONS TABLE (One-to-Many relation to Doctors)
 CREATE TABLE locations (
@@ -57,6 +63,9 @@ CREATE TABLE locations (
     zone_id TEXT, 
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- May 2026 Supabase Security Update: Explicit Data API Grants
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE locations TO anon, authenticated;
 
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_locations_doctor_id ON locations(doctor_id);
