@@ -1105,6 +1105,10 @@ function backToList() {
             m.unbindTooltip();
             m.bindTooltip(`<b>${prevDoc.name}</b>`);
         }
+        // Force clustered pins to zoom/spiderfy so the popup is visible
+        markerCluster.zoomToShowLayer(m, function () {
+            m.openPopup();
+        });
     }
     activeDoctorId = null;
     if (isMobile()) setSheetState('half');
