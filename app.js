@@ -421,7 +421,17 @@ function getSpecClass(doc) {
 
 // ── Navigation URL (3-tier priority) ─────────────────────────────────────────
 function getNavUrl(doc) {
-    const primaryLoc = doc.locations && doc.locations.find(l => l.is_primary) || (doc.locations && doc.locations[0]);
+    let primaryLoc = null;
+    if (doc.locations && doc.locations.length > 0) {
+        if (activeZone !== 'all') {
+            primaryLoc = doc.locations.find(l => l.zone_id == activeZone && l.is_primary) ||
+                         doc.locations.find(l => l.zone_id == activeZone) ||
+                         doc.locations.find(l => l.is_primary) ||
+                         doc.locations[0];
+        } else {
+            primaryLoc = doc.locations.find(l => l.is_primary) || doc.locations[0];
+        }
+    }
     if (!primaryLoc) return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(doc.name)}+Bangalore`;
 
     // Priority 1: explicit Google Maps link
@@ -522,7 +532,14 @@ function addMarker(doc) {
     let isMisplaced = false;
 
     if (doc.locations && doc.locations.length > 0) {
-        primaryLoc = doc.locations.find(l => l.is_primary) || doc.locations[0];
+        if (activeZone !== 'all') {
+            primaryLoc = doc.locations.find(l => l.zone_id == activeZone && l.is_primary) ||
+                         doc.locations.find(l => l.zone_id == activeZone) ||
+                         doc.locations.find(l => l.is_primary) ||
+                         doc.locations[0];
+        } else {
+            primaryLoc = doc.locations.find(l => l.is_primary) || doc.locations[0];
+        }
         if (primaryLoc) {
             lat = parseFloat(primaryLoc.lat);
             lon = parseFloat(primaryLoc.lon);
