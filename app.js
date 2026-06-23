@@ -162,7 +162,53 @@ function initMap() {
         subdomains: 'abcd', maxZoom: 20
     }).addTo(map);
 
-    markerCluster = L.markerClusterGroup({ chunkedLoading: true, maxClusterRadius: 40, spiderfyOnMaxZoom: true });
+    markerCluster = L.markerClusterGroup({
+        chunkedLoading: true,
+        maxClusterRadius: 40,
+        spiderfyOnMaxZoom: true,
+        iconCreateFunction: function (cluster) {
+            const markers = cluster.getAllChildMarkers();
+            const zoneCounts = {};
+            
+            markers.forEach(marker => {
+                const zId = marker.doctorZoneId;
+                if (zId !== undefined && zId !== null) {
+                    zoneCounts[zId] = (zoneCounts[zId] || 0) + 1;
+                }
+            });
+
+            // Find the majority zone
+            let majorityZoneId = null;
+            let maxCount = 0;
+            for (const zId in zoneCounts) {
+                if (zoneCounts[zId] > maxCount) {
+                    maxCount = zoneCounts[zId];
+                    majorityZoneId = zId;
+                }
+            }
+
+            // Determine the color for the majority zone
+            let clusterColor = '#94a3b8'; // default fallback
+            if (majorityZoneId !== null) {
+                const zoneInt = parseInt(majorityZoneId);
+                if (!isNaN(zoneInt)) {
+                    clusterColor = ZONE_COLORS[zoneInt % ZONE_COLORS.length];
+                }
+            }
+
+            const childCount = cluster.getChildCount();
+
+            // Return custom div icon with zone color
+            return L.divIcon({
+                html: `<div style="background-color: ${clusterColor}44;">` +
+                      `<div style="background-color: ${clusterColor};">` +
+                      `<span>${childCount}</span>` +
+                      `</div></div>`,
+                className: 'marker-cluster marker-cluster-custom',
+                iconSize: [40, 40]
+            });
+        }
+    });
     map.addLayer(markerCluster);
 }
 
@@ -599,6 +645,7 @@ function addMarker(doc) {
             html: `<div class="marker-pin" style="background: ${markerColor} !important;"></div>`
         });
         const marker = L.marker([lat, lon], { icon });
+        marker.doctorZoneId = zoneId;
         
         let tooltipText = `<b>${doc.name}</b>`;
         if (isMisplaced) {
