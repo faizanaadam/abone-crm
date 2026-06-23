@@ -5,4 +5,4 @@ processed_doctors.json
 clustering_plot.png
 *.xlsx
 .env
-failed_geocodes.txt
+failed_geocodes*.txt
