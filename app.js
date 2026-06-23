@@ -19,7 +19,7 @@ let misplacedDoctors = [];
 let currentEditId = null;
 let focusModeActive = false;
 
-const ZONE_COLORS = ['#ef4444', '#f97316', '#f59e0b', '#84cc16', '#22c55e',
+const ZONE_COLORS = ['#ec4899', '#f97316', '#f59e0b', '#84cc16', '#22c55e',
     '#10b981', '#06b6d4', '#3b82f6', '#6366f1', '#a855f7'];
 
 // ── Boot & Auth ───────────────────────────────────────────────────────────────
@@ -551,6 +551,22 @@ function addMarker(doc) {
     }
 
     if (lat !== null && lon !== null) {
+        // Enforce Bangalore containment: Skip rendering if coordinates are outside all zones
+        if (zoneGeoJSON && typeof turf !== 'undefined') {
+            const pt = turf.point([lon, lat]);
+            let insideAnyZone = false;
+            for (const feature of zoneGeoJSON.features) {
+                if (turf.booleanPointInPolygon(pt, feature)) {
+                    insideAnyZone = true;
+                    break;
+                }
+            }
+            if (!insideAnyZone) {
+                console.warn(`Skipping rendering for doctor ${doc.name} as coordinates (${lat}, ${lon}) are outside Bangalore.`);
+                return;
+            }
+        }
+
         let specClass = getSpecClass(doc);
         if (isMisplaced) specClass = 'spec-misplaced';
         else if (isApproximate) specClass = 'spec-approximate';
@@ -573,11 +589,14 @@ function addMarker(doc) {
             }
         }
 
+        const zoneInt = parseInt(zoneId);
+        const markerColor = (!isNaN(zoneInt)) ? ZONE_COLORS[zoneInt % ZONE_COLORS.length] : '#94a3b8';
+
         const icon = L.divIcon({
             className: `custom-marker ${specClass} ${extraClass}`,
             iconSize: (isApproximate || isMisplaced) ? [20, 20] : [30, 42],
             iconAnchor: (isApproximate || isMisplaced) ? [10, 10] : [15, 42],
-            html: `<div class="marker-pin"></div>`
+            html: `<div class="marker-pin" style="background: ${markerColor} !important;"></div>`
         });
         const marker = L.marker([lat, lon], { icon });
         

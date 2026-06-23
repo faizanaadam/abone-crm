@@ -129,15 +129,8 @@ body {
     border-radius: 50%;
 }
 
-/* Specialization-colored pins */
-.spec-spine .marker-pin        { background: #16a34a; }
-.spec-trauma .marker-pin       { background: #ea580c; }
-.spec-both .marker-pin         { background: #ca8a04; }
-.spec-general .marker-pin      { background: #2563eb; }
-
 /* Grey CIRCLE — approximate / area-center */
 .spec-approximate .marker-pin {
-    background: #94a3b8;
     border-radius: 50%;
     transform: none;
     width: 20px;
@@ -150,7 +143,7 @@ body {
 
 /* Red CIRCLE — misplaced geocode */
 .spec-misplaced .marker-pin {
-    background: #ef4444;
+    background: #ef4444 !important;
     border-radius: 50%;
     transform: none;
     width: 20px;
