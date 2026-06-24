@@ -228,7 +228,7 @@ async function fetchDoctors() {
     const pageSize = 1000;
     while (true) {
         try {
-            const { data, error } = await db.from('doctors').select('*, locations(*), activity_logs(*)').eq('is_active', true).range(from, from + pageSize - 1);
+            const { data, error } = await db.from('doctors').select('*, locations(*), activity_logs(*, profiles(first_name, last_name))').eq('is_active', true).range(from, from + pageSize - 1);
             if (error) {
                 console.error("Supabase fetch error:", error);
                 showError('Failed to load directory. See console for details.');
@@ -297,7 +297,7 @@ function downloadZoneReport() {
 
     const headers = [
         "Doctor ID", "Name", "Specialization", "Abone Usage %", "Rep Notes",
-        "Locations (Names)", "Total Logs", "Last Visit Date"
+        "Locations (Names)", "Total Visits", "Last Visit Date", "Visit History"
     ];
 
     const rows = list.map(doc => {
@@ -308,10 +308,17 @@ function downloadZoneReport() {
 
         let totalLogs = 0;
         let lastVisit = "";
+        let visitHistory = "";
         if (doc.activity_logs && doc.activity_logs.length > 0) {
             totalLogs = doc.activity_logs.length;
             const sortedLogs = [...doc.activity_logs].sort((a, b) => new Date(b.visit_date) - new Date(a.visit_date));
             lastVisit = sortedLogs[0].visit_date.split('T')[0];
+            
+            visitHistory = sortedLogs.map(l => {
+                const date = l.visit_date.split('T')[0];
+                const repName = l.profiles ? `${l.profiles.first_name || ''} ${l.profiles.last_name || ''}`.trim() : 'Unknown Rep';
+                return `${date} (${repName})`;
+            }).join("; ");
         }
 
         return [
@@ -322,7 +329,8 @@ function downloadZoneReport() {
             `"${(doc.rep_notes || '').replace(/"/g, '""')}"`,
             `"${locNames.replace(/"/g, '""')}"`,
             totalLogs,
-            lastVisit
+            lastVisit,
+            `"${visitHistory.replace(/"/g, '""')}"`
         ].join(",");
     });
 
@@ -952,9 +960,12 @@ function createDoctorCard(doc) {
         </div>` : ''}
         
         ${(() => {
-            const myLogs = (doc.activity_logs || []).filter(l => currentUserProfile && l.rep_id === currentUserProfile.id).sort((a, b) => new Date(b.visit_date) - new Date(a.visit_date));
+            if (!currentUserProfile || currentUserProfile.role !== 'rep') return '';
+            const myLogs = (doc.activity_logs || []).filter(l => l.rep_id === currentUserProfile.id).sort((a, b) => new Date(b.visit_date) - new Date(a.visit_date));
             if (myLogs.length > 0) {
-                return `<div class="mt-2 text-[10px] font-bold text-green-600 bg-green-50 inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-green-100"><i class="ph-bold ph-check-circle"></i> Visited: ${new Date(myLogs[0].visit_date).toLocaleDateString()}</div>`;
+                const count = myLogs.length;
+                const lastDate = new Date(myLogs[0].visit_date).toLocaleDateString();
+                return `<div class="mt-2 text-[10px] font-bold text-green-600 bg-green-50 inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-green-100"><i class="ph-bold ph-check-circle"></i> Visited ${count} ${count === 1 ? 'time' : 'times'} (Last: ${lastDate})</div>`;
             }
             return '';
         })()}
@@ -1022,15 +1033,36 @@ function showDetail(id) {
             <p class="text-sm text-slate-500 mt-1">${doc.specialization || 'General Ortho'}</p>
             
             ${(() => {
-                const myLogs = (doc.activity_logs || []).filter(l => currentUserProfile && l.rep_id === currentUserProfile.id).sort((a, b) => new Date(b.visit_date) - new Date(a.visit_date));
+                if (!currentUserProfile || currentUserProfile.role !== 'rep') return '';
+                const myLogs = (doc.activity_logs || []).filter(l => l.rep_id === currentUserProfile.id).sort((a, b) => new Date(b.visit_date) - new Date(a.visit_date));
                 if (myLogs.length > 0) {
                     const lastVisit = new Date(myLogs[0].visit_date).toLocaleDateString();
                     return `
-                        <div class="flex items-center gap-2 mt-2 mb-3">
-                            <div class="bg-emerald-50 text-emerald-700 text-[11px] font-bold px-2 py-1 rounded-md flex items-center gap-1 border border-emerald-100 shadow-sm">
-                                <i class="ph-bold ph-check-circle text-emerald-500 text-sm"></i> Visited: ${lastVisit}
+                        <div class="mt-2 mb-4 bg-emerald-50/40 border border-emerald-100 rounded-xl p-3.5 shadow-sm">
+                            <div class="flex items-center justify-between">
+                                <div class="text-xs font-bold text-emerald-800 flex items-center gap-1.5">
+                                    <i class="ph-bold ph-check-circle text-emerald-500 text-base"></i> Visited ${myLogs.length} ${myLogs.length === 1 ? 'time' : 'times'}
+                                </div>
+                                <button onclick="unmarkVisited('${doc.id}')" class="text-[10px] text-red-500 hover:text-red-700 underline font-semibold transition-colors flex items-center gap-0.5" title="Remove the most recent visit log">
+                                    <i class="ph-bold ph-x"></i> Remove Latest
+                                </button>
                             </div>
-                            <button onclick="unmarkVisited('${doc.id}')" class="text-[10px] text-red-500 hover:text-red-700 underline font-semibold transition-colors ml-1"><i class="ph-bold ph-x"></i> Remove</button>
+                            <div class="mt-2.5 flex flex-wrap gap-1.5 max-h-[80px] overflow-y-auto pr-1">
+                                ${myLogs.map((l, i) => {
+                                    const date = new Date(l.visit_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+                                    const outcomeText = l.outcome && l.outcome !== 'Visited' ? `: ${l.outcome}` : '';
+                                    return `
+                                        <span class="text-[10px] bg-emerald-50 text-emerald-700 font-semibold px-2 py-0.5 rounded border border-emerald-100/50" title="${l.notes || 'No notes'}">
+                                            #${myLogs.length - i} - ${date}${outcomeText}
+                                        </span>
+                                    `;
+                                }).join('')}
+                            </div>
+                            <div class="mt-3">
+                                <button onclick="quickMarkVisited('${doc.id}')" class="flex items-center gap-1 text-[11px] font-bold text-slate-700 bg-white hover:bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200 active:scale-95 transition-all shadow-sm">
+                                    <i class="ph-bold ph-plus text-slate-500"></i> Log Another Visit
+                                </button>
+                            </div>
                         </div>
                     `;
                 } else {
@@ -1917,6 +1949,9 @@ async function submitLogVisit() {
     // Show success state
     btnText.textContent = 'Visit Logged!';
     btnIcon.className = 'ph-bold ph-check-circle text-white';
+    
+    await fetchDoctors();
+    showDetail(docId);
     
     setTimeout(() => { 
         closeLogVisitModal(); 
