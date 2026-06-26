@@ -448,12 +448,8 @@ function getNavUrl(doc) {
         if (!link.startsWith('http')) link = 'https://' + link;
         return link;
     }
-    // Priority 2: precise coordinates (Blue Pin)
-    // Must not be marked approximate in DB or via missing coordinate fallback
-    if (!doc.is_approximate && !doc._isApproximate && !doc._isMisplaced && primaryLoc.lat && primaryLoc.lon) {
-        return `https://www.google.com/maps/search/?api=1&query=${primaryLoc.lat},${primaryLoc.lon}`;
-    }
-    // Priority 3: approximate or misplaced (Orange/Red) — search by name + area
+    
+    // Priority 2: search by name + area
     const clinicPart = encodeURIComponent((primaryLoc.hospital_name || doc.name || '').trim());
     return `https://www.google.com/maps/search/?api=1&query=${clinicPart}+Bangalore`;
 }
