@@ -577,14 +577,45 @@ function addMarker(doc) {
     }
 
     // Step 3: Enforced Point-in-Polygon Containment Logic
-    if (lat !== null && lon !== null && zonePolyFeature && typeof turf !== 'undefined') {
-        const point = turf.point([lon, lat]);
-        const isInside = turf.booleanPointInPolygon(point, zonePolyFeature);
-        
-        if (!isInside) {
-            isMisplaced = true;
-            lat = null; // force fallback
-            lon = null;
+    // If coordinates exist but don't match the assigned zone, try to auto-correct
+    // the zone rather than discarding valid coordinates.
+    if (lat !== null && lon !== null && typeof turf !== 'undefined' && zoneGeoJSON) {
+        if (zonePolyFeature) {
+            const point = turf.point([lon, lat]);
+            const isInside = turf.booleanPointInPolygon(point, zonePolyFeature);
+            
+            if (!isInside) {
+                // Coordinates are NOT in the assigned zone — try to find the real zone
+                let correctedZone = null;
+                for (const feature of zoneGeoJSON.features) {
+                    if (turf.booleanPointInPolygon(point, feature)) {
+                        correctedZone = feature;
+                        break;
+                    }
+                }
+                if (correctedZone) {
+                    // Coordinates are valid but in a different zone — use the correct zone
+                    zonePolyFeature = correctedZone;
+                    zoneCenterLat = correctedZone.properties.center_lat;
+                    zoneCenterLng = correctedZone.properties.center_lng;
+                } else {
+                    // Coordinates are outside ALL zones — truly misplaced
+                    isMisplaced = true;
+                    lat = null;
+                    lon = null;
+                }
+            }
+        } else {
+            // No zone assigned — try to detect zone from coordinates
+            const point = turf.point([lon, lat]);
+            for (const feature of zoneGeoJSON.features) {
+                if (turf.booleanPointInPolygon(point, feature)) {
+                    zonePolyFeature = feature;
+                    zoneCenterLat = feature.properties.center_lat;
+                    zoneCenterLng = feature.properties.center_lng;
+                    break;
+                }
+            }
         }
     }
 
