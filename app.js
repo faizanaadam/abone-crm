@@ -1399,6 +1399,13 @@ function setupEventListeners() {
     const closeMisplacedBtn = document.getElementById('closeMisplacedBtn');
     if (closeMisplacedBtn) closeMisplacedBtn.onclick = () => toggleMisplacedView(false);
 
+    // Admin Manage Reps View Toggle
+    const toggleManageRepsBtn = document.getElementById('toggleManageRepsBtn');
+    if (toggleManageRepsBtn) toggleManageRepsBtn.onclick = () => toggleManageRepsView(true);
+
+    const closeManageRepsBtn = document.getElementById('closeManageRepsBtn');
+    if (closeManageRepsBtn) closeManageRepsBtn.onclick = () => toggleManageRepsView(false);
+
     // Admin Diff Modal
     const closeDiffModalBtn = document.getElementById('closeDiffModalBtn');
     if (closeDiffModalBtn) closeDiffModalBtn.onclick = closeDiffModal;
@@ -1414,6 +1421,7 @@ function toggleApprovalsView(show) {
     const approvals = document.getElementById('admin-approvals-view');
     const visitLogs = document.getElementById('admin-visit-logs-view');
     const misplaced = document.getElementById('admin-misplaced-view');
+    const repsView = document.getElementById('admin-reps-view');
 
     if (show) {
         docList.classList.add('hidden');
@@ -1422,6 +1430,7 @@ function toggleApprovalsView(show) {
         visitLogs.classList.add('hidden');
         visitLogs.classList.remove('flex');
         if(misplaced) { misplaced.classList.add('hidden'); misplaced.classList.remove('flex'); }
+        if(repsView) { repsView.classList.add('hidden'); repsView.classList.remove('flex'); }
         approvals.classList.remove('hidden');
         approvals.classList.add('flex');
         fetchPendingEdits();
@@ -1438,6 +1447,7 @@ function toggleVisitLogsView(show) {
     const approvals = document.getElementById('admin-approvals-view');
     const visitLogs = document.getElementById('admin-visit-logs-view');
     const misplaced = document.getElementById('admin-misplaced-view');
+    const repsView = document.getElementById('admin-reps-view');
 
     if (show) {
         docList.classList.add('hidden');
@@ -1446,6 +1456,7 @@ function toggleVisitLogsView(show) {
         approvals.classList.add('hidden');
         approvals.classList.remove('flex');
         if(misplaced) { misplaced.classList.add('hidden'); misplaced.classList.remove('flex'); }
+        if(repsView) { repsView.classList.add('hidden'); repsView.classList.remove('flex'); }
         visitLogs.classList.remove('hidden');
         visitLogs.classList.add('flex');
         fetchVisitLogs();
@@ -1462,6 +1473,7 @@ function toggleMisplacedView(show) {
     const approvals = document.getElementById('admin-approvals-view');
     const visitLogs = document.getElementById('admin-visit-logs-view');
     const misplaced = document.getElementById('admin-misplaced-view');
+    const repsView = document.getElementById('admin-reps-view');
 
     if (show) {
         docList.classList.add('hidden');
@@ -1471,6 +1483,7 @@ function toggleMisplacedView(show) {
         approvals.classList.remove('flex');
         visitLogs.classList.add('hidden');
         visitLogs.classList.remove('flex');
+        if(repsView) { repsView.classList.add('hidden'); repsView.classList.remove('flex'); }
         misplaced.classList.remove('hidden');
         misplaced.classList.add('flex');
     } else {
@@ -1478,6 +1491,48 @@ function toggleMisplacedView(show) {
         misplaced.classList.remove('flex');
         docList.classList.remove('hidden');
     }
+}
+
+function toggleManageRepsView(show) {
+    const docList = document.getElementById('doctorList');
+    const detail = document.getElementById('detail-card');
+    const approvals = document.getElementById('admin-approvals-view');
+    const visitLogs = document.getElementById('admin-visit-logs-view');
+    const misplaced = document.getElementById('admin-misplaced-view');
+    const repsView = document.getElementById('admin-reps-view');
+
+    if (show) {
+        docList.classList.add('hidden');
+        detail.classList.add('hidden');
+        detail.classList.remove('flex');
+        approvals.classList.add('hidden');
+        approvals.classList.remove('flex');
+        visitLogs.classList.add('hidden');
+        visitLogs.classList.remove('flex');
+        if(misplaced) { misplaced.classList.add('hidden'); misplaced.classList.remove('flex'); }
+        repsView.classList.remove('hidden');
+        repsView.classList.add('flex');
+        
+        populateRepZoneDropdown();
+        fetchReps();
+    } else {
+        repsView.classList.add('hidden');
+        repsView.classList.remove('flex');
+        docList.classList.remove('hidden');
+    }
+}
+
+function populateRepZoneDropdown() {
+    const select = document.getElementById('newRepZone');
+    if (!select) return;
+    
+    select.innerHTML = '<option value="">None / Unassigned</option>';
+    zonesData.forEach(z => {
+        const opt = document.createElement('option');
+        opt.value = z.id;
+        opt.textContent = z.name;
+        select.appendChild(opt);
+    });
 }
 
 function renderMisplacedList() {
@@ -2526,4 +2581,169 @@ function showToast(message, type = 'error') {
         toast.classList.add('translate-y-[-100%]', 'opacity-0');
         setTimeout(() => toast.remove(), 300);
     }, 3000);
+}
+
+// ── Admin Rep Management Logic ────────────────────────────────────────────────
+async function fetchReps() {
+    const listContainer = document.getElementById('activeRepsList');
+    if (listContainer) listContainer.innerHTML = '<div class="text-slate-400 text-center py-6 text-xs"><i class="ph ph-spinner-gap animate-spin text-xl block mb-1"></i>Loading reps...</div>';
+
+    const { data: reps, error } = await db
+        .from('profiles')
+        .select('*')
+        .eq('role', 'rep')
+        .order('created_at', { ascending: false });
+
+    if (error) {
+        console.error('Failed to fetch profiles:', error);
+        if (listContainer) listContainer.innerHTML = '<div class="text-red-500 text-center py-6 text-xs">Failed to load reps.</div>';
+        return;
+    }
+
+    renderRepsList(reps || []);
+}
+
+function renderRepsList(reps) {
+    const listContainer = document.getElementById('activeRepsList');
+    if (!listContainer) return;
+
+    if (reps.length === 0) {
+        listContainer.innerHTML = '<div class="text-slate-400 text-center py-6 text-xs">No sales representatives registered yet.</div>';
+        return;
+    }
+
+    listContainer.innerHTML = reps.map(rep => {
+        const name = `${rep.first_name || ''} ${rep.last_name || ''}`.trim() || 'Unnamed Rep';
+        const email = rep.email || 'No email';
+        
+        const zoneOptions = zonesData.map(z => {
+            return `<option value="${z.id}" ${rep.assigned_zone_id == z.id ? 'selected' : ''}>${z.name}</option>`;
+        }).join('');
+        
+        return `
+            <div class="bg-white border border-slate-200 rounded-xl p-3.5 shadow-sm space-y-2.5">
+                <div class="flex justify-between items-start">
+                    <div>
+                        <h4 class="text-xs font-bold text-slate-800">${name}</h4>
+                        <p class="text-[10px] text-slate-500 font-medium">${email}</p>
+                    </div>
+                    <div class="flex gap-1.5">
+                        <button onclick="changeRepPassword('${rep.id}', '${email}')" class="text-slate-400 hover:text-blue-600 p-1 rounded transition-colors" title="Change Password">
+                            <i class="ph ph-key text-sm"></i>
+                        </button>
+                        <button onclick="deleteRepUser('${rep.id}', '${name}')" class="text-slate-400 hover:text-red-600 p-1 rounded transition-colors" title="Delete Account">
+                            <i class="ph ph-trash text-sm"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="flex items-center justify-between pt-2 border-t border-slate-100">
+                    <label class="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-semibold">Assigned Zone</label>
+                    <select onchange="updateRepZone('${rep.id}', this.value)" class="border border-slate-200 rounded-lg px-2 py-1 text-[11px] bg-slate-50 focus:outline-none focus:border-blue-500 font-medium">
+                        <option value="">None</option>
+                        ${zoneOptions}
+                    </select>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+async function updateRepZone(repId, zoneId) {
+    showToast('Updating zone...', 'info');
+    const { error } = await db.from('profiles').update({ assigned_zone_id: zoneId || null }).eq('id', repId);
+    if (error) {
+        showToast('Failed to update zone: ' + error.message, 'error');
+        console.error('Zone update error:', error);
+    } else {
+        showToast('Rep zone updated successfully.', 'success');
+        await fetchReps();
+    }
+}
+
+async function changeRepPassword(repId, email) {
+    const newPassword = prompt(`Enter new password for ${email} (Min 6 characters):`);
+    if (!newPassword) return;
+    if (newPassword.length < 6) {
+        alert('Password must be at least 6 characters long.');
+        return;
+    }
+    
+    showToast('Updating password...', 'info');
+    const { data, error } = await db.rpc('admin_reset_password', {
+        p_user_id: repId,
+        p_new_password: newPassword
+    });
+    
+    if (error) {
+        showToast('Failed to update password: ' + error.message, 'error');
+        console.error('Password reset error:', error);
+    } else {
+        showToast('Password updated successfully.', 'success');
+    }
+}
+
+async function deleteRepUser(repId, name) {
+    if (!confirm(`Are you sure you want to permanently delete the account for ${name}? This action cannot be undone.`)) return;
+    
+    showToast('Deleting representative...', 'info');
+    const { data, error } = await db.rpc('admin_delete_user', {
+        p_user_id: repId
+    });
+    
+    if (error) {
+        showToast('Failed to delete representative: ' + error.message, 'error');
+        console.error('Delete user error:', error);
+    } else {
+        showToast('Representative deleted successfully.', 'success');
+        await fetchReps();
+    }
+}
+
+async function submitCreateRep() {
+    const firstName = document.getElementById('newRepFirstName').value.trim();
+    const lastName = document.getElementById('newRepLastName').value.trim();
+    const email = document.getElementById('newRepEmail').value.trim();
+    const password = document.getElementById('newRepPassword').value.trim();
+    const zoneId = document.getElementById('newRepZone').value;
+
+    if (!email || !password) {
+        showToast('Email and Password are required.', 'error');
+        return;
+    }
+    if (password.length < 6) {
+        showToast('Password must be at least 6 characters.', 'error');
+        return;
+    }
+
+    const btnText = document.getElementById('createRepText');
+    const btnIcon = document.getElementById('createRepIcon');
+    btnText.textContent = 'Creating...';
+    btnIcon.className = 'ph-bold ph-spinner-gap animate-spin text-sm';
+
+    const { data, error } = await db.rpc('create_rep_user', {
+        p_email: email,
+        p_password: password,
+        p_zone_id: zoneId || null,
+        p_first_name: firstName || null,
+        p_last_name: lastName || null
+    });
+
+    if (error) {
+        showToast('Failed to create representative: ' + error.message, 'error');
+        console.error('Create rep error:', error);
+        btnText.textContent = 'Create Rep';
+        btnIcon.className = 'ph-bold ph-user-plus text-sm';
+    } else {
+        showToast('Representative created successfully!', 'success');
+        
+        document.getElementById('newRepFirstName').value = '';
+        document.getElementById('newRepLastName').value = '';
+        document.getElementById('newRepEmail').value = '';
+        document.getElementById('newRepPassword').value = '';
+        
+        btnText.textContent = 'Create Rep';
+        btnIcon.className = 'ph-bold ph-user-plus text-sm';
+        
+        await fetchReps();
+    }
 }
