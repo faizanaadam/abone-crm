@@ -1793,7 +1793,14 @@ function parseCoordsFromGoogleMapsLink(url) {
         // ignore
     }
     
-    // Check for @lat,lon
+    // Priority 1: Check for explicit place coordinates in data payload (!3d lat !4d lon)
+    // This is the actual pin location, whereas @lat,lon is just the viewport center
+    const exactMatch = url.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/);
+    if (exactMatch) {
+        return { lat: parseFloat(exactMatch[1]), lon: parseFloat(exactMatch[2]) };
+    }
+
+    // Priority 2: Check for @lat,lon
     const atMatch = url.match(/@(-?\d+\.\d+),\s*(-?\d+\.\d+)/);
     if (atMatch) {
         return { lat: parseFloat(atMatch[1]), lon: parseFloat(atMatch[2]) };
