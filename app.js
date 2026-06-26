@@ -1747,6 +1747,65 @@ function closeSuggestModal() {
     modal.classList.remove('flex');
 }
 
+function parseCoordsFromGoogleMapsLink(url) {
+    if (!url) return null;
+    
+    try {
+        url = decodeURIComponent(url);
+    } catch (e) {
+        // ignore
+    }
+    
+    // Check for @lat,lon
+    const atMatch = url.match(/@(-?\d+\.\d+),\s*(-?\d+\.\d+)/);
+    if (atMatch) {
+        return { lat: parseFloat(atMatch[1]), lon: parseFloat(atMatch[2]) };
+    }
+    
+    // Check for place/lat,lon or search/lat,lon or dir/lat,lon
+    const pathMatch = url.match(/\/maps\/(?:place|search|dir|[^/]+)\/(-?\d+\.\d+),\s*(-?\d+\.\d+)/);
+    if (pathMatch) {
+        return { lat: parseFloat(pathMatch[1]), lon: parseFloat(pathMatch[2]) };
+    }
+    
+    // Check query params: q, daddr, query, saddr, ll
+    try {
+        const urlObj = new URL(url);
+        const params = new URLSearchParams(urlObj.search);
+        for (const param of ['q', 'daddr', 'query', 'saddr', 'll']) {
+            const val = params.get(param);
+            if (val) {
+                const match = val.match(/(-?\d+\.\d+),\s*(-?\d+\.\d+)/);
+                if (match) {
+                    return { lat: parseFloat(match[1]), lon: parseFloat(match[2]) };
+                }
+            }
+        }
+    } catch (e) {
+        // ignore
+    }
+    
+    // Fallback: look for any pattern of lat,lon in the text
+    const fallbackMatch = url.match(/(-?\d+\.\d+),\s*(-?\d+\.\d+)/);
+    if (fallbackMatch) {
+        return { lat: parseFloat(fallbackMatch[1]), lon: parseFloat(fallbackMatch[2]) };
+    }
+    
+    return null;
+}
+
+function detectZoneFromCoords(lat, lon) {
+    if (zoneGeoJSON && typeof turf !== 'undefined') {
+        const dropPoint = turf.point([lon, lat]);
+        for (const feature of zoneGeoJSON.features) {
+            if (turf.booleanPointInPolygon(dropPoint, feature)) {
+                return feature.properties.zone_id;
+            }
+        }
+    }
+    return null;
+}
+
 async function submitSuggestion() {
     if (!currentUserProfile) return;
     
@@ -1782,7 +1841,7 @@ async function submitSuggestion() {
             const locId = block.querySelector('.loc-id').value;
             const name = block.querySelector('.loc-name').value;
             const address = block.querySelector('.loc-address').value;
-            const mapLink = block.querySelector('.loc-map').value;
+            const mapLink = block.querySelector('.loc-map').value.trim();
             const category = block.querySelector('.loc-category') ? block.querySelector('.loc-category').value : '';
             
             const originalLoc = doc.locations.find(l => l.id == locId);
@@ -1791,13 +1850,29 @@ async function submitSuggestion() {
                     address !== (originalLoc.hospital_address || '') ||
                     mapLink !== (originalLoc.map_link || '') ||
                     category !== (originalLoc.category || '')) {
-                    locations.push({
+                    
+                    const locObj = {
                         id: locId,
                         hospital_name: name,
                         hospital_address: address,
-                        map_link: mapLink,
+                        map_link: mapLink || null,
                         category: category || null
-                    });
+                    };
+
+                    // Auto-parse coordinates and detect zone if map_link changed and contains coordinates
+                    if (mapLink && mapLink !== (originalLoc.map_link || '')) {
+                        const coords = parseCoordsFromGoogleMapsLink(mapLink);
+                        if (coords) {
+                            locObj.lat = coords.lat;
+                            locObj.lon = coords.lon;
+                            const zoneId = detectZoneFromCoords(coords.lat, coords.lon);
+                            if (zoneId) {
+                                locObj.zone_id = zoneId;
+                            }
+                        }
+                    }
+
+                    locations.push(locObj);
                 }
             }
         });
@@ -2068,6 +2143,23 @@ async function submitAddDoctor() {
     btnText.textContent = 'Submitting...';
     btnIcon.className = 'ph-bold ph-spinner-gap animate-spin';
 
+    const mapLink = document.getElementById('addDocMapLink').value.trim() || null;
+    let lat = null;
+    let lon = null;
+    let zoneId = document.getElementById('addDocZone').value;
+
+    if (mapLink) {
+        const coords = parseCoordsFromGoogleMapsLink(mapLink);
+        if (coords) {
+            lat = coords.lat;
+            lon = coords.lon;
+            const detectedZone = detectZoneFromCoords(coords.lat, coords.lon);
+            if (detectedZone) {
+                zoneId = detectedZone;
+            }
+        }
+    }
+
     const newData = {
         name: name,
         specialization: document.getElementById('addDocSpec').value,
@@ -2079,9 +2171,11 @@ async function submitAddDoctor() {
             hospital_name: hospital,
             hospital_address: document.getElementById('addDocAddress').value.trim() || null,
             consultation_timing: document.getElementById('addDocTiming').value.trim() || null,
-            zone_id: document.getElementById('addDocZone').value,
+            zone_id: zoneId,
             category: document.getElementById('addDocCategory').value || null,
-            map_link: document.getElementById('addDocMapLink').value.trim() || null,
+            map_link: mapLink,
+            lat: lat,
+            lon: lon,
             is_primary: true
         }
     };
@@ -2445,6 +2539,8 @@ async function approveEdit() {
                 zone_id: edit.new_data.location.zone_id || null,
                 category: edit.new_data.location.category || null,
                 map_link: edit.new_data.location.map_link || null,
+                lat: edit.new_data.location.lat || null,
+                lon: edit.new_data.location.lon || null,
                 is_primary: true
             };
 
