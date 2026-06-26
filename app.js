@@ -442,9 +442,11 @@ function getNavUrl(doc) {
     }
     if (!primaryLoc) return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(doc.name)}+Bangalore`;
 
-    // Priority 1: explicit Google Maps link
-    if (primaryLoc.map_link && primaryLoc.map_link.startsWith('http')) {
-        return primaryLoc.map_link;
+    // Priority 1: explicit Google Maps link (User requested: ALWAYS prefer this if it exists)
+    if (primaryLoc.map_link && primaryLoc.map_link.trim() !== '') {
+        let link = primaryLoc.map_link.trim();
+        if (!link.startsWith('http')) link = 'https://' + link;
+        return link;
     }
     // Priority 2: precise coordinates (Blue Pin)
     // Must not be marked approximate in DB or via missing coordinate fallback
@@ -1126,11 +1128,15 @@ function showDetail(id) {
             <div class="space-y-3">
                 ${(doc.locations && doc.locations.length > 0) ? doc.locations.map((loc, idx) => {
         const clinicPart = encodeURIComponent((loc.hospital_name || doc.name || '').trim());
-        const locNavUrl = (loc.map_link && loc.map_link.startsWith('http'))
-            ? loc.map_link
-            : (loc.lat && loc.lon && !doc.is_approximate && !doc._isApproximate && !doc._isMisplaced)
-                ? `https://www.google.com/maps/search/?api=1&query=${loc.lat},${loc.lon}`
-                : `https://www.google.com/maps/search/?api=1&query=${clinicPart}+Bangalore`;
+        let locNavUrl = null;
+        if (loc.map_link && loc.map_link.trim() !== '') {
+            locNavUrl = loc.map_link.trim();
+            if (!locNavUrl.startsWith('http')) locNavUrl = 'https://' + locNavUrl;
+        } else if (loc.lat && loc.lon && !doc.is_approximate && !doc._isApproximate && !doc._isMisplaced) {
+            locNavUrl = `https://www.google.com/maps/search/?api=1&query=${loc.lat},${loc.lon}`;
+        } else {
+            locNavUrl = `https://www.google.com/maps/search/?api=1&query=${clinicPart}+Bangalore`;
+        }
 
         const zone = zonesData.find(z => z.id == loc.zone_id);
         const zoneName = zone ? zone.name : null;
@@ -1825,6 +1831,32 @@ function parseCoordsFromGoogleMapsLink(url) {
     return null;
 }
 
+async function geocodeFromGooglePlaces(query) {
+    if (!query) return null;
+    const apiKey = 'AIzaSyBYqcAzzjnNA0w3AxiWmAJxtGcU0lHsm-Y';
+    try {
+        const response = await fetch('https://places.googleapis.com/v1/places:searchText', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Goog-Api-Key': apiKey,
+                'X-Goog-FieldMask': 'places.location'
+            },
+            body: JSON.stringify({ textQuery: query })
+        });
+        const data = await response.json();
+        if (data.places && data.places.length > 0) {
+            const loc = data.places[0].location;
+            if (loc && loc.latitude && loc.longitude) {
+                return { lat: loc.latitude, lon: loc.longitude };
+            }
+        }
+    } catch (e) {
+        console.error("Geocoding failed", e);
+    }
+    return null;
+}
+
 function detectZoneFromCoords(lat, lon) {
     if (zoneGeoJSON && typeof turf !== 'undefined') {
         const dropPoint = turf.point([lon, lat]);
@@ -1868,7 +1900,7 @@ async function submitSuggestion() {
     const container = document.getElementById('suggestLocationsContainer');
     if (container) {
         const blocks = container.querySelectorAll('.bg-slate-50');
-        blocks.forEach(block => {
+        for (const block of Array.from(blocks)) {
             const locId = block.querySelector('.loc-id').value;
             const name = block.querySelector('.loc-name').value;
             const address = block.querySelector('.loc-address').value;
@@ -1877,11 +1909,11 @@ async function submitSuggestion() {
             
             const originalLoc = doc.locations.find(l => l.id == locId);
             if (originalLoc) {
-                const coords = parseCoordsFromGoogleMapsLink(mapLink);
-                const hasCoordsChanged = coords && (
-                    coords.lat !== originalLoc.lat || 
-                    coords.lon !== originalLoc.lon
-                );
+                let coords = parseCoordsFromGoogleMapsLink(mapLink);
+                let hasCoordsChanged = false;
+                if (coords) {
+                    hasCoordsChanged = (coords.lat !== originalLoc.lat || coords.lon !== originalLoc.lon);
+                }
 
                 if (name !== (originalLoc.hospital_name || '') ||
                     address !== (originalLoc.hospital_address || '') ||
@@ -1897,6 +1929,12 @@ async function submitSuggestion() {
                         category: category || null
                     };
 
+                    // If they provided a link, but we couldn't parse coords, fallback to Geocoding API
+                    if (mapLink && !coords && mapLink !== (originalLoc.map_link || '')) {
+                        const query = `${doc.name} ${name} ${address} Bangalore`;
+                        coords = await geocodeFromGooglePlaces(query);
+                    }
+
                     if (coords) {
                         locObj.lat = coords.lat;
                         locObj.lon = coords.lon;
@@ -1909,7 +1947,7 @@ async function submitSuggestion() {
                     locations.push(locObj);
                 }
             }
-        });
+        }
         
         if (locations.length > 0) {
             newData.locations = locations;
@@ -2183,7 +2221,14 @@ async function submitAddDoctor() {
     let zoneId = document.getElementById('addDocZone').value;
 
     if (mapLink) {
-        const coords = parseCoordsFromGoogleMapsLink(mapLink);
+        let coords = parseCoordsFromGoogleMapsLink(mapLink);
+        
+        // If they provided a link, but we couldn't parse coords, fallback to Geocoding API
+        if (!coords) {
+            const query = `${name} ${hospital} Bangalore`;
+            coords = await geocodeFromGooglePlaces(query);
+        }
+
         if (coords) {
             lat = coords.lat;
             lon = coords.lon;
