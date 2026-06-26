@@ -1846,10 +1846,17 @@ async function submitSuggestion() {
             
             const originalLoc = doc.locations.find(l => l.id == locId);
             if (originalLoc) {
+                const coords = parseCoordsFromGoogleMapsLink(mapLink);
+                const hasCoordsChanged = coords && (
+                    coords.lat !== originalLoc.lat || 
+                    coords.lon !== originalLoc.lon
+                );
+
                 if (name !== (originalLoc.hospital_name || '') ||
                     address !== (originalLoc.hospital_address || '') ||
                     mapLink !== (originalLoc.map_link || '') ||
-                    category !== (originalLoc.category || '')) {
+                    category !== (originalLoc.category || '') ||
+                    hasCoordsChanged) {
                     
                     const locObj = {
                         id: locId,
@@ -1859,16 +1866,12 @@ async function submitSuggestion() {
                         category: category || null
                     };
 
-                    // Auto-parse coordinates and detect zone if map_link changed and contains coordinates
-                    if (mapLink && mapLink !== (originalLoc.map_link || '')) {
-                        const coords = parseCoordsFromGoogleMapsLink(mapLink);
-                        if (coords) {
-                            locObj.lat = coords.lat;
-                            locObj.lon = coords.lon;
-                            const zoneId = detectZoneFromCoords(coords.lat, coords.lon);
-                            if (zoneId) {
-                                locObj.zone_id = zoneId;
-                            }
+                    if (coords) {
+                        locObj.lat = coords.lat;
+                        locObj.lon = coords.lon;
+                        const zoneId = detectZoneFromCoords(coords.lat, coords.lon);
+                        if (zoneId) {
+                            locObj.zone_id = zoneId;
                         }
                     }
 
