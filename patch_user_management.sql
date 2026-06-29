@@ -1,29 +1,14 @@
 -- ==============================================================================
--- Abone Surgicals CRM - Admin User Management Database Migration
--- Run this in your Supabase SQL Editor first.
+-- Abone Surgicals CRM - Fix User Creation Function and Purge Corrupted User
+-- Run this in your Supabase SQL Editor.
 -- ==============================================================================
 
--- 1. Add email column to profiles if not exists
-ALTER TABLE public.profiles 
-ADD COLUMN IF NOT EXISTS email TEXT;
+-- 1. Purge the corrupted user 'rep@abone.com' and any dangling profile/identities
+DELETE FROM public.profiles WHERE email = 'rep@abone.com';
+DELETE FROM auth.identities WHERE provider_id = 'rep@abone.com' OR email = 'rep@abone.com';
+DELETE FROM auth.users WHERE email = 'rep@abone.com';
 
--- 2. Update the new user trigger function to include email
-CREATE OR REPLACE FUNCTION public.handle_new_user() 
-RETURNS trigger AS $$
-BEGIN
-  INSERT INTO public.profiles (id, role, email)
-  VALUES (new.id, 'rep', new.email);
-  RETURN new;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
-
--- 3. Backfill any existing profiles with their emails from auth.users
-UPDATE public.profiles p
-SET email = u.email
-FROM auth.users u
-WHERE p.id = u.id AND p.email IS NULL;
-
--- 4. Create function to create a new rep user securely
+-- 2. Update the create_rep_user function to use v_user_id::text as provider_id
 CREATE OR REPLACE FUNCTION public.create_rep_user(
     p_email TEXT,
     p_password TEXT,
@@ -103,7 +88,7 @@ BEGIN
         now(),
         now(),
         now(),
-        v_user_id::text
+        v_user_id::text  -- FIX: In modern Supabase, email provider_id must be the user's UUID string
     );
 
     -- Update profiles (first_name, last_name, and zone_id)
@@ -116,53 +101,5 @@ BEGIN
     WHERE id = v_user_id;
 
     RETURN v_user_id;
-END;
-$$;
-
--- 5. Create function to reset a rep user password
-CREATE OR REPLACE FUNCTION public.admin_reset_password(
-    p_user_id UUID,
-    p_new_password TEXT
-)
-RETURNS BOOLEAN
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public, auth, extensions
-AS $$
-BEGIN
-    -- Check if caller is admin
-    IF public.get_user_role() <> 'admin' THEN
-        RAISE EXCEPTION 'Only administrators can reset passwords.';
-    END IF;
-
-    -- Update auth.users password
-    UPDATE auth.users
-    SET encrypted_password = crypt(p_new_password, gen_salt('bf', 10)),
-        updated_at = now()
-    WHERE id = p_user_id;
-
-    RETURN TRUE;
-END;
-$$;
-
--- 6. Create function to delete a user securely
-CREATE OR REPLACE FUNCTION public.admin_delete_user(
-    p_user_id UUID
-)
-RETURNS BOOLEAN
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public, auth, extensions
-AS $$
-BEGIN
-    -- Check if caller is admin
-    IF public.get_user_role() <> 'admin' THEN
-        RAISE EXCEPTION 'Only administrators can delete users.';
-    END IF;
-
-    -- Delete from auth.users (cascades to identities and profiles)
-    DELETE FROM auth.users WHERE id = p_user_id;
-
-    RETURN TRUE;
 END;
 $$;
